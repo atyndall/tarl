@@ -8,6 +8,7 @@
 #include <Wire.h>
 
 
+//#define MORE_MEMORY
 
 // Configuration constants
 #define PIXEL_LINES     4
@@ -15,6 +16,10 @@
 #define BYTES_PER_PIXEL 2
 #define NUM_PIXELS      (PIXEL_LINES * PIXEL_COLUMNS)
 #define EEPROM_SIZE     255
+
+// EEPROM helpers
+#define e_read(X)       (EEPROM_DATA[X])
+#define e_write(X, Y)   (EEPROM_DATA[X] = (Y))
 
 // I2C addresses
 #define ADDR_EEPROM   0x50
@@ -74,9 +79,14 @@ int b_cp;
 int tgc;
 int b_i_scale;
 
+#if defined(MORE_MEMORY)
+float alpha_ij[NUM_PIXELS];
+int a_ij[NUM_PIXELS];
+int b_ij[NUM_PIXELS];
+#endif
+
 char hpbuf[2];          // Hex printing buffer
 int res;                // Error code storage
-
 
 /*
 // Send assertion failures over serial
@@ -231,7 +241,7 @@ boolean sensor_write_conf() {
 // Check byte is 0xAA in this instance
 boolean sensor_write_trim() {
   if (!EEPROM_DUMPED) return false;
-  return _sensor_write_check(CMD_SENSOR_WRITE_TRIM, 0xAA, EEPROM_DATA[EEPROM_TRIMMING_VAL], 0x00);
+  return _sensor_write_check(CMD_SENSOR_WRITE_TRIM, 0xAA, e_read(EEPROM_TRIMMING_VAL), 0x00);
 }
 
 // Reads EEPROM memory into global variable
@@ -251,7 +261,8 @@ boolean eeprom_read_all() {
     i = j;
     while( Wire.available() ) { // slave may send less than requested
       byte b = Wire.read(); // receive a byte as character
-      EEPROM_DATA[i] = b;
+      //EEPROM_DATA[i] = b;
+      e_write(i, b);
       i++;
     }
   }
@@ -265,29 +276,46 @@ boolean eeprom_read_all() {
 }
 
 void calculate_init() {
-  v_th = (EEPROM_DATA[EEPROM_V_TH_H] <<8) + EEPROM_DATA[EEPROM_V_TH_L];
-  k_t1 = ((EEPROM_DATA[EEPROM_K_T1_H] <<8) + EEPROM_DATA[EEPROM_K_T1_L])/1024.0;
-  k_t2 =((EEPROM_DATA[EEPROM_K_T2_H] <<8) + EEPROM_DATA[EEPROM_K_T2_L])/1048576.0;
+  v_th = (e_read(EEPROM_V_TH_H) <<8) + e_read(EEPROM_V_TH_L);
+  k_t1 = ((e_read(EEPROM_K_T1_H) <<8) + e_read(EEPROM_K_T1_L))/1024.0;
+  k_t2 =((e_read(EEPROM_K_T2_H) <<8) + e_read(EEPROM_K_T2_L))/1048576.0;
 
-  a_cp = EEPROM_DATA[EEPROM_A_CP];
+  a_cp = e_read(EEPROM_A_CP);
   if(a_cp > 127){
     a_cp = a_cp - 256;
   }
-  b_cp = EEPROM_DATA[EEPROM_B_CP];
+  b_cp = e_read(EEPROM_B_CP);
   if(b_cp > 127){
     b_cp = b_cp - 256;
   }
-  tgc = EEPROM_DATA[EEPROM_TGC];
+  tgc = e_read(EEPROM_TGC);
   if(tgc > 127){
     tgc = tgc - 256;
   }
 
-  b_i_scale = EEPROM_DATA[EEPROM_B_I_SCALE];
+  b_i_scale = e_read(EEPROM_B_I_SCALE);
 
-  emissivity = (((unsigned int)EEPROM_DATA[EEPROM_EPSILON_H] << 8) + EEPROM_DATA[EEPROM_EPSILON_L])/32768.0;
+  emissivity = (((unsigned int)e_read(EEPROM_EPSILON_H) << 8) + e_read(EEPROM_EPSILON_L))/32768.0;
 
-  da0_scale = pow(2, -EEPROM_DATA[EEPROM_DELTA_ALPHA_SCALE]);
-  alpha_const = (float)(((unsigned int)EEPROM_DATA[EEPROM_ALPHA_0_H] << 8) + (unsigned int)EEPROM_DATA[EEPROM_ALPHA_0_L]) * pow(2, -EEPROM_DATA[EEPROM_ALPHA_0_SCALE]);
+  da0_scale = pow(2, -e_read(EEPROM_DELTA_ALPHA_SCALE));
+  alpha_const = (float)(((unsigned int)e_read(EEPROM_ALPHA_0_H) << 8) + (unsigned int)e_read(EEPROM_ALPHA_0_L)) * pow(2, -e_read(EEPROM_ALPHA_0_SCALE));
+
+  #if defined(MORE_MEMORY)
+  for (int i=0; i<64; i++){
+    float alpha_var = (float)e_read(EEPROM_DELTA_ALPHA_00 + i) * da0_scale;
+    alpha_ij[i] = (alpha_const + alpha_var);
+
+    a_ij[i] = e_read(EEPROM_A_I_00 + i);
+    if(a_ij[i] > 127){
+      a_ij[i] = a_ij[i] - 256;
+    }
+
+    b_ij[i] = e_read(EEPROM_B_I_00 + i);
+    if(b_ij[i] > 127){
+      b_ij[i] = b_ij[i] - 256;
+    }
+  }
+  #endif
 }
 
 void calculate_temp() {
@@ -296,22 +324,28 @@ void calculate_temp() {
   
   Serial.print("IRCLEAN ");
   for (int i=0; i<64; i++){
-    int a_ij = EEPROM_DATA[EEPROM_A_I_00 + i];
-    if(a_ij > 127){
-      a_ij = a_ij - 256;
-    }
+    #if defined(MORE_MEMORY)
+      float alpha_ij_v = alpha_ij[i];
+      int a_ij_v = a_ij[i];
+      int b_ij_v = b_ij[i];
+    #else
+      float alpha_var = (float)e_read(EEPROM_DELTA_ALPHA_00 + i) * da0_scale;
+      float alpha_ij_v = (alpha_const + alpha_var);
 
-    int b_ij = EEPROM_DATA[EEPROM_B_I_00 + i];
-    if(b_ij > 127){
-      b_ij = b_ij - 256;
-    }
+      int a_ij_v = e_read(EEPROM_A_I_00 + i);
+      if(a_ij_v > 127){
+        a_ij_v = a_ij_v - 256;
+      }
 
-    float alpha_var = (float)EEPROM_DATA[EEPROM_DELTA_ALPHA_00 + i] * da0_scale;
-    float alpha_ij = (alpha_const + alpha_var);
+      int b_ij_v = e_read(EEPROM_B_I_00 + i);
+      if(b_ij_v > 127){
+        b_ij_v = b_ij_v - 256;
+      }
+    #endif
 
-    float v_ir_tgc_comp = IRDATA[i] - (a_ij + (float)(b_ij/pow(2, b_i_scale)) * (ta - 25)) - (((float)tgc/32)*v_cp_off_comp);
+    float v_ir_tgc_comp = IRDATA[i] - (a_ij_v + (float)(b_ij_v/pow(2, b_i_scale)) * (ta - 25)) - (((float)tgc/32)*v_cp_off_comp);
     float v_ir_comp = v_ir_tgc_comp / emissivity;                  //removed to save SRAM, since emissivity in my case is equal to 1. 
-    float temp = sqrt(sqrt((v_ir_comp/alpha_ij) + pow((ta + 273.15),4))) - 273.15;
+    float temp = sqrt(sqrt((v_ir_comp/alpha_ij_v) + pow((ta + 273.15),4))) - 273.15;
     Serial.print(temp);
     Serial.print("\t");
   }
@@ -323,7 +357,7 @@ void calculate_temp() {
 void print_eeprom() {
   Serial.print("EEPROM ");
   for(int i = 0; i < EEPROM_SIZE; i++) {
-    print_hex(EEPROM_DATA[i]);
+    print_hex(e_read(i));
   }
   Serial.println();
 }
@@ -343,6 +377,8 @@ void setup() {
 
   PTAT = sensor_read_ptat();
   assert(PTAT != -1);
+
+  calculate_init();
 
   Serial.println("ACTIVE");
 }
@@ -374,7 +410,6 @@ void loop() {
   }
   Serial.println();
 
-  calculate_init();
   calculate_temp();
 
   Serial.println("STOP");
