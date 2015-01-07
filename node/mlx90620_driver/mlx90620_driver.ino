@@ -6,16 +6,15 @@
 //#include <assert.h>
 #include <math.h>
 #include <Wire.h>
+#include "SimpleTimer.h" // http://playground.arduino.cc/Code/SimpleTimer
 
-
-//#define MORE_MEMORY
 
 // Configuration constants
 #define PIXEL_LINES     4
 #define PIXEL_COLUMNS   16
 #define BYTES_PER_PIXEL 2
-#define NUM_PIXELS      (PIXEL_LINES * PIXEL_COLUMNS)
 #define EEPROM_SIZE     255
+#define NUM_PIXELS      (PIXEL_LINES * PIXEL_COLUMNS)
 
 // EEPROM helpers
 #define e_read(X)       (EEPROM_DATA[X])
@@ -29,6 +28,11 @@
 #define CMD_SENSOR_READ         0x02
 #define CMD_SENSOR_WRITE_CONF   0x03
 #define CMD_SENSOR_WRITE_TRIM   0x04
+
+// Addresses in the sensor RAM (see Table 9 in spec)
+#define SENSOR_PTAT             0x90
+#define SENSOR_CPIX             0x91
+#define SENSOR_CONFIG           0x92
 
 // Addresses in the EEPROM (see Tables 5 & 7 in spec)
 #define EEPROM_A_I_00             0x00 // A_i(0,0) IR pixel individual offset coefficient (ends at 0x3F)
@@ -54,8 +58,12 @@
 #define EEPROM_EPSILON_H          0xE5 // Emissivity (high)
 #define EEPROM_TRIMMING_VAL       0xF7 // Oscillator trimming value
 
-const int REFRESH_FREQ = 16;    // Sensor refresh frequency (Hz)
+// Config flags
+#define CFG_TA    8
+#define CFG_IR    9  
+#define CFG_POR   10
 
+const int REFRESH_FREQ = 1;
 
 
 unsigned int PTAT;              // Proportional to absolute temperature value
@@ -65,7 +73,7 @@ int IRDATA[NUM_PIXELS];         // Infrared raw data
 byte EEPROM_DATA[EEPROM_SIZE];  // EEPROM dump
 boolean EEPROM_DUMPED;          // If EEPROM dump has previously occurred
 
-float ta;                         // Absolute chip temperature / ambient chip temperature (degrees celsius)
+float ta;                       // Absolute chip temperature / ambient chip temperature (degrees celsius)
 float to;
 float emissivity;
 float k_t1;
@@ -79,14 +87,14 @@ int b_cp;
 int tgc;
 int b_i_scale;
 
-#if defined(MORE_MEMORY)
 float alpha_ij[NUM_PIXELS];
 int a_ij[NUM_PIXELS];
 int b_ij[NUM_PIXELS];
-#endif
 
 char hpbuf[2];          // Hex printing buffer
 int res;                // Error code storage
+
+float temp[NUM_PIXELS];
 
 /*
 // Send assertion failures over serial
@@ -102,7 +110,7 @@ void __assert(const char *__func, const char *__file, int __lineno, const char *
 }*/
 
 void assert(boolean a) {
-  if (!a) Serial.println("ASSFAIL");
+  //if (!a) Serial.println("ASSFAIL");
 }
 
 // Takes byte value and will output 2 character hex representation on serial
@@ -128,7 +136,7 @@ int _sensor_read_int(byte read_addr) {
   
   Wire.requestFrom(ADDR_SENSOR, 2); // technically the 1 read takes up 2 bytes
 
-  int PTAT_LSB, PTAT_MSB;
+  int LSB, MSB;
   int i = 0;
   while( Wire.available() ) {
     i++;
@@ -137,21 +145,41 @@ int _sensor_read_int(byte read_addr) {
       return -1; // Returned more bytes than it should have
     }
 
-    PTAT_LSB = Wire.read();
-    PTAT_MSB = Wire.read(); 
+    LSB = Wire.read();
+    MSB = Wire.read(); 
   }
 
-  return ((unsigned int)PTAT_MSB << 8) + PTAT_LSB; // rearrange int to account for endian difference (TODO: check)
+  return ((unsigned int)MSB << 8) + LSB; // rearrange int to account for endian difference (TODO: check)
+}
+
+bool _sensor_read_config_flag(int flag_loc) {
+  int cur_cfg = _sensor_read_int(SENSOR_CONFIG);
+  return (bool)(cur_cfg & ( 1 << flag_loc )) >> flag_loc;
 }
 
 // Reads Proportional To Absolute Temperature (PTAT) value
 int sensor_read_ptat() {
-  return _sensor_read_int(0x90);
+  return _sensor_read_int(SENSOR_PTAT);
 }
 
 // Reads compensation pixel
 int sensor_read_cpix() {
-  return _sensor_read_int(0x91);
+  return _sensor_read_int(SENSOR_CPIX);
+}
+
+// Reads POR flag
+bool sensor_read_por() {
+  return _sensor_read_config_flag(CFG_POR); // POR is 10th bit
+}
+
+// Read Ta measurement flag
+bool sensor_read_ta_measure() {
+  return _sensor_read_config_flag(CFG_TA);
+}
+
+// Read IR measurement flag
+bool sensor_read_ir_measure() {
+  return _sensor_read_config_flag(CFG_IR);
 }
 
 boolean sensor_read_irdata() {
@@ -204,43 +232,65 @@ boolean _sensor_write_check(byte cmd, byte check, byte lsb, byte msb) {
 }
 
 // See datasheet: 9.4.2 Write configuration register command
+// See datasheet: 8.2.2.1 Configuration register (0x92)
 // Check byte is 0x55 in this instance
 boolean sensor_write_conf() {
-  byte Hz_LSB;
+  byte cfg_MSB = B01110100;
+  //              ||||||||
+  //              |||||||*--- Ta measurement running (read only)
+  //              ||||||*---- IR measurement running (read only)
+  //              |||||*----- POR flag cleared
+  //              ||||*------ I2C FM+ mode enabled
+  //              ||**------- Ta refresh rate (2 byte code, 2Hz hardcoded)
+  //              |*--------- ADC high reference
+  //              *---------- NA
+
+  byte cfg_LSB = B00001110;
+  //              ||||||||
+  //              ||||****--- 4 byte IR refresh rate (4 byte code, 1Hz default)
+  //              ||**------- NA
+  //              |*--------- Continuous measurement mode
+  //              *---------- Normal operation mode
 
   switch(REFRESH_FREQ) {
-  case 0:
-    Hz_LSB = B00001111;
-    break;
-  case 1:
-    Hz_LSB = B00001110;
+  case 0: // 0.5Hz
+    cfg_LSB = B00001111;
     break;
   case 2:
-    Hz_LSB = B00001101;
+    cfg_LSB = B00001101;
     break;
   case 4:
-    Hz_LSB = B00001100;
+    cfg_LSB = B00001100;
     break;
   case 8:
-    Hz_LSB = B00001011;
+    cfg_LSB = B00001011;
     break;
   case 16:
-    Hz_LSB = B00001010;
+    cfg_LSB = B00001010;
     break;
   case 32:
-    Hz_LSB = B00001001;
+    cfg_LSB = B00001001;
     break;
-  default:
-    Hz_LSB = B00001110;
+  case 64:
+    cfg_LSB = B00001000;
+    break;
+  case 128:
+    cfg_LSB = B00000111;
+    break;
+  case 256:
+    cfg_LSB = B00000110;
+    break;
+  case 512:
+    cfg_LSB = B00000000; // modes 5 to 0 are all 512Hz
+    break;
   }
 
-  return _sensor_write_check(CMD_SENSOR_WRITE_CONF, 0x55, Hz_LSB, 0x74);
+  return _sensor_write_check(CMD_SENSOR_WRITE_CONF, 0x55, cfg_LSB, cfg_MSB);
 }
 
 // See datasheet: 9.4.3 Write trimming command
 // Check byte is 0xAA in this instance
 boolean sensor_write_trim() {
-  if (!EEPROM_DUMPED) return false;
   return _sensor_write_check(CMD_SENSOR_WRITE_TRIM, 0xAA, e_read(EEPROM_TRIMMING_VAL), 0x00);
 }
 
@@ -300,7 +350,6 @@ void calculate_init() {
   da0_scale = pow(2, -e_read(EEPROM_DELTA_ALPHA_SCALE));
   alpha_const = (float)(((unsigned int)e_read(EEPROM_ALPHA_0_H) << 8) + (unsigned int)e_read(EEPROM_ALPHA_0_L)) * pow(2, -e_read(EEPROM_ALPHA_0_SCALE));
 
-  #if defined(MORE_MEMORY)
   for (int i=0; i<64; i++){
     float alpha_var = (float)e_read(EEPROM_DELTA_ALPHA_00 + i) * da0_scale;
     alpha_ij[i] = (alpha_const + alpha_var);
@@ -315,42 +364,36 @@ void calculate_init() {
       b_ij[i] = b_ij[i] - 256;
     }
   }
-  #endif
+}
+
+float calculate_ta() {
+  float ptat = (float)sensor_read_ptat();
+  assert(ptat != -1);
+  return (-k_t1 + 
+      sqrt(
+        square(k_t1) - 
+        ( 4 * k_t2 * (v_th-ptat) )
+      )
+    ) / (2*k_t2) + 25;
 }
 
 void calculate_temp() {
-  float ta = (-k_t1 + sqrt(square(k_t1) - (4 * k_t2 * (v_th - (float)PTAT))))/(2*k_t2) + 25;  //it's much more simple now, isn't it? :)
   float v_cp_off_comp = (float) CPIX - (a_cp + (b_cp/pow(2, b_i_scale)) * (ta - 25)); //this is needed only during the to calculation, so I declare it here.
   
-  Serial.print("IRCLEAN ");
+  //Serial.print("IRCLEAN ");
   for (int i=0; i<64; i++){
-    #if defined(MORE_MEMORY)
-      float alpha_ij_v = alpha_ij[i];
-      int a_ij_v = a_ij[i];
-      int b_ij_v = b_ij[i];
-    #else
-      float alpha_var = (float)e_read(EEPROM_DELTA_ALPHA_00 + i) * da0_scale;
-      float alpha_ij_v = (alpha_const + alpha_var);
-
-      int a_ij_v = e_read(EEPROM_A_I_00 + i);
-      if(a_ij_v > 127){
-        a_ij_v = a_ij_v - 256;
-      }
-
-      int b_ij_v = e_read(EEPROM_B_I_00 + i);
-      if(b_ij_v > 127){
-        b_ij_v = b_ij_v - 256;
-      }
-    #endif
+    float alpha_ij_v = alpha_ij[i];
+    int a_ij_v = a_ij[i];
+    int b_ij_v = b_ij[i];
 
     float v_ir_tgc_comp = IRDATA[i] - (a_ij_v + (float)(b_ij_v/pow(2, b_i_scale)) * (ta - 25)) - (((float)tgc/32)*v_cp_off_comp);
     float v_ir_comp = v_ir_tgc_comp / emissivity;                  //removed to save SRAM, since emissivity in my case is equal to 1. 
-    float temp = sqrt(sqrt((v_ir_comp/alpha_ij_v) + pow((ta + 273.15),4))) - 273.15;
-    Serial.print(temp);
-    Serial.print("\t");
+    temp[i] = sqrt(sqrt((v_ir_comp/alpha_ij_v) + pow((ta + 273.15),4))) - 273.15;
+    //Serial.print(temp);
+    //Serial.print("\t");
   }
 
-  Serial.println();
+  //Serial.println();
 }
 
 
@@ -362,32 +405,45 @@ void print_eeprom() {
   Serial.println();
 }
 
+
+void ta_loop() {
+  ta = calculate_ta();
+}
+
+void por_loop() {
+  if (!sensor_read_por()) { // there has been a reset
+    assert(sensor_write_conf());
+  }
+}
+
+void ir_loop() {
+  assert(sensor_read_irdata());
+
+  CPIX = sensor_read_cpix();
+  assert(CPIX != -1);
+
+  calculate_temp();
+
+  Serial.println("START");
+
+  Serial.print("IRCLEAN ");
+  for(int i = 0; i<64; i++) {
+    Serial.print(temp[i]);
+    Serial.print("\t");
+  }
+  Serial.println();
+
+ Serial.println("STOP");
+}
+
+
+SimpleTimer timer;
+
 void setup() {
   Wire.begin(); // join i2c bus (address optional for master)
   Serial.begin(115200);
 
   Serial.println("INIT");
-
-  assert(eeprom_read_all());
-  assert(sensor_write_trim());
-  assert(sensor_write_conf());
-
-  CPIX = sensor_read_cpix();
-  assert(CPIX != -1);
-
-  PTAT = sensor_read_ptat();
-  assert(PTAT != -1);
-
-  calculate_init();
-
-  Serial.println("ACTIVE");
-}
-
-
-void loop() {  
-  assert(sensor_read_irdata());
-
-  Serial.println("START");
 
   Serial.println("DRIVER MLX90620");
   Serial.print("BUILD ");
@@ -395,24 +451,36 @@ void loop() {
   Serial.print(" ");
   Serial.println(__TIME__);
 
-  Serial.print("CPIX ");
-  Serial.println(CPIX);
+  assert(eeprom_read_all());
+  assert(sensor_write_trim());
+  assert(sensor_write_conf());
 
-  Serial.print("PTAT ");
-  Serial.println(PTAT);
+  calculate_init();
 
-  print_eeprom();
+  ta = calculate_ta();
 
-  Serial.print("IRRAW ");
-  for (int i = 0; i < NUM_PIXELS; i++) {
-    Serial.print(IRDATA[i]);
-    Serial.print("\t");
+
+  float hz = REFRESH_FREQ;
+
+  if (REFRESH_FREQ == 0) {
+    hz = 0.5;
   }
-  Serial.println();
 
-  calculate_temp();
+  long irlen = (1/hz) * 1000;
+  long talen = (1/2.0) * 1000;
 
-  Serial.println("STOP");
+  if (talen < irlen) {
+    talen = irlen;
+  }
 
-  //delay(1000);
+  timer.setInterval(irlen, ir_loop);
+  timer.setInterval(talen, ta_loop);
+  timer.setInterval(2000, por_loop);
+
+  Serial.println("ACTIVE");
+}
+
+
+void loop() {
+  timer.run();
 }
