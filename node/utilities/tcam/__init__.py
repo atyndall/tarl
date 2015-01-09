@@ -1,12 +1,12 @@
 import serial
-import threading
 import copy
 import Queue as queue
 import time
-import pygame
-import colorsys
 #import picamera
 from collections import deque
+import threading
+import pygame
+import colorsys
 import datetime
 
 class TempCam:
@@ -16,16 +16,11 @@ class TempCam:
   #build = None
 
   _serial_thread = None
-  _display_thread = None
   _serial_stop = False
-  _display_stop = False
 
   _temps = None
 
   _queues = []
-
-  _tmin = None
-  _tmax = None
 
   def __init__(self, tty, baud=115200):
     self.tty = tty
@@ -60,6 +55,68 @@ class TempCam:
 
     return decoded_packet
 
+  def close(self):
+    self._serial_stop = True
+
+    while self._serial_thread.is_alive(): # Wait for thread to terminate
+      pass
+
+  def get_temps(self):
+    if self._temps is None:
+      return False
+    else:
+      return copy.deepcopy(self._temps)
+
+  def subscribe(self):
+    q = queue.Queue()
+    self._queues.append(q)
+    return q
+
+  def subscribe_lifo(self):
+    q = queue.LifoQueue()
+    self._queues.append(q)
+    return q
+
+  def _thread_run(self):
+    ser = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
+
+    while True:
+      line = ser.readline().decode("ascii", "ignore").strip()
+      msg = []
+
+      # Capture a whole packet
+      while not line.startswith("START"):
+        line = ser.readline().decode("ascii", "ignore").strip()
+
+      while not line.startswith("STOP"):
+        msg.append(line)
+        line = ser.readline().decode("ascii", "ignore").strip()
+
+      msg.append(line)
+
+      dpct = self._decode_packet(msg)
+      if 'ir' in dpct:
+        self._temps = dpct
+
+        for q in self._queues:
+          q.put(self.get_temps())
+
+      if self._serial_stop:
+        ser.close()
+        return
+ 
+
+class Video:
+  _display_thread = None
+  _display_stop = False
+  _tmin = None
+  _tmax = None
+
+  _tcam = None
+
+  def __init__(self, tcam):
+    _tcam = tcam
+
   def display(self, block=False, tmin=15, tmax=35):
     self._tmin = tmin
     self._tmax = tmax
@@ -89,8 +146,9 @@ class TempCam:
   def _display_thread(self):
     WIDTH = 100
 
-    q = self.subscribe_lifo()
+    q = self._tcam.subscribe_lifo()
     pygame.init()
+    pygame.display.set_caption("Live IR Display")
 
     size = (16 * WIDTH, 4 * WIDTH)
     screen = pygame.display.set_mode(size)
@@ -136,6 +194,7 @@ class TempCam:
     playdata = self.file_to_capture(file)
 
     pygame.init()
+    pygame.display.set_caption("Playing back '{}'".format(file))
 
     size = (16 * WIDTH, 4 * WIDTH)
     screen = pygame.display.set_mode(size)
@@ -197,26 +256,6 @@ class TempCam:
 
   def close(self):
     self.display_close()
-    self._serial_stop = True
-
-    while self._serial_thread.is_alive(): # Wait for thread to terminate
-      pass
-
-  def get_temps(self):
-    if self._temps is None:
-      return False
-    else:
-      return copy.deepcopy(self._temps)
-
-  def subscribe(self):
-    q = queue.Queue()
-    self._queues.append(q)
-    return q
-
-  def subscribe_lifo(self):
-    q = queue.LifoQueue()
-    self._queues.append(q)
-    return q
 
   def capture_to_file(self, capture, file):
     with open(file + '.hcap', 'w') as f:
@@ -250,7 +289,7 @@ class TempCam:
 
   def capture(self, seconds, file=None, video=False):
     buffer = []
-    q = self.subscribe()
+    q = self._tcam.subscribe()
 
     camera = None
 
@@ -273,32 +312,3 @@ class TempCam:
       self.capture_to_file(buffer, file)
 
     return buffer
-
-  def _thread_run(self):
-    ser = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
-
-    while True:
-      line = ser.readline().decode("ascii", "ignore").strip()
-      msg = []
-
-      # Capture a whole packet
-      while not line.startswith("START"):
-        line = ser.readline().decode("ascii", "ignore").strip()
-
-      while not line.startswith("STOP"):
-        msg.append(line)
-        line = ser.readline().decode("ascii", "ignore").strip()
-
-      msg.append(line)
-
-      dpct = self._decode_packet(msg)
-      if 'ir' in dpct:
-        self._temps = dpct
-
-        for q in self._queues:
-          q.put(self.get_temps())
-
-      if self._serial_stop:
-        ser.close()
-        return
-       
