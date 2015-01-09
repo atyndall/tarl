@@ -49,7 +49,6 @@ class TempCam:
       elif cmd == "STOP":
         decoded_packet['stop_millis'] = long(val)
       else:
-        print(line)
         try:
           ir.append(tuple(float(x) for x in line.split("\t")))
         except ValueError:
@@ -105,7 +104,8 @@ class TempCam:
         pygame.quit()
         return
 
-      px = q.get()
+      qg = q.get()
+      px = qg['ir']
 
       lag = q.qsize()
       if lag > 0:
@@ -158,7 +158,9 @@ class TempCam:
 
   def capture_to_file(self, capture, file):
     with open(file + '.hcap', 'w') as f:
-      for t, arr in capture:
+      for frame in capture:
+        t = frame['start_millis']
+        arr = frame['ir']
         f.write(str(t) + "\n")
         for l in arr:
           f.write('\t'.join([str(x) for x in l]) + "\n")
@@ -180,7 +182,7 @@ class TempCam:
 
     while elapsed <= seconds:
       elapsed = time.time() - start
-      buffer.append( (elapsed, q.get()) )
+      buffer.append( q.get() )
 
     #if video:
     #  camera.stop_recording()
@@ -209,7 +211,7 @@ class TempCam:
 
       dpct = self._decode_packet(msg)
       if 'ir' in dpct:
-        self._temps = dpct['ir']
+        self._temps = dpct
 
         for q in self._queues:
           q.put(self.get_temps())
