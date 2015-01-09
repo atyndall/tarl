@@ -7,6 +7,7 @@ import pygame
 import colorsys
 #import picamera
 from collections import deque
+import datetime
 
 class TempCam:
   tty = None
@@ -122,14 +123,75 @@ class TempCam:
 
       pygame.display.flip()
 
+  def playback(self, file, hz=1.0, tmin=15, tmax=35):
+    self._tmin = tmin
+    self._tmax = tmax
+
+    def millis_diff(a, b):
+      diff = b - a
+      return (diff.days * 24 * 60 * 60 + diff.seconds) * 1000 + diff.microseconds / 1000.0
+
+    WIDTH = 100
+
+    playdata = self.file_to_capture(file)
+
+    pygame.init()
+
+    size = (16 * WIDTH, 4 * WIDTH)
+    screen = pygame.display.set_mode(size)
+
+    background = pygame.Surface(screen.get_size())
+    background = background.convert_alpha()
+
+    font = pygame.font.Font(None, 36)
+
+
+    start = datetime.datetime.now()
+    offset = playdata[0]['start_millis']
+
+    for n, frame in enumerate(playdata):
+      for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+          pygame.quit()
+          return
+
+      if self._display_stop:
+        pygame.quit()
+        return
+
+      qg = frame
+      px = qg['ir']
+
+      for i, row in enumerate(px):
+        for j, v in enumerate(row):
+          rgb = self._temp_to_rgb(v, self._tmin, self._tmax)
+
+          x = i*WIDTH
+          y = j*WIDTH
+
+          screen.fill(rgb, (y, x, WIDTH, WIDTH))
+
+      timestr = 'T+%.3f' % ((qg['start_millis'] - offset)/ 1000.0)
+
+      background.fill((0, 0, 0, 0))
+      text = font.render(timestr, 1, (255,255,255))
+      background.blit(text, (0,0))
+
+      # Blit everything to the screen
+      screen.blit(background, (0, 0))
+
+      pygame.display.flip()
+
+      time.sleep(1.0/float(hz))
+
   def display_close(self):
     if self._display_thread is None:
       return
 
     self._display_stop = True
 
-    while self._display_thread.is_alive(): # Wait for thread to terminate
-      pass
+    #while self._display_thread.is_alive(): # Wait for thread to terminate
+    #  pass
 
     self._display_thread = None
 
@@ -165,6 +227,26 @@ class TempCam:
         for l in arr:
           f.write('\t'.join([str(x) for x in l]) + "\n")
         f.write("\n")
+
+  def file_to_capture(self, file):
+    capture = []
+    with open(file + '.hcap', 'r') as f:
+      i = 0
+      frame = {'ir':[]}
+
+      for line in f:
+        j = i % 6
+        if j == 0:
+          frame['start_millis'] = int(line)
+        elif 0 < j < 5:
+          frame['ir'].append(tuple([float(x) for x in line.split("\t")]))
+        elif j == 5:
+          capture.append(frame)
+          frame = {'ir':[]}
+
+        i += 1
+
+    return capture
 
   def capture(self, seconds, file=None, video=False):
     buffer = []
