@@ -17,6 +17,7 @@ class TempCam:
 
   _serial_thread = None
   _serial_stop = False
+  _serial_obj = None
 
   _temps = None
 
@@ -25,7 +26,10 @@ class TempCam:
   def __init__(self, tty, baud=115200):
     self.tty = tty
     self.baud = baud
+
+    self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
     self._serial_thread = threading.Thread(group=None, target=self._thread_run)
+    self._serial_thread.daemon = True
     self._serial_thread.start()
 
   def __del__(self):
@@ -58,8 +62,9 @@ class TempCam:
   def close(self):
     self._serial_stop = True
 
-    while self._serial_thread.is_alive(): # Wait for thread to terminate
-      pass
+    if self._serial_thread is not None:
+      while self._serial_thread.is_alive(): # Wait for thread to terminate
+        pass
 
   def get_temps(self):
     if self._temps is None:
@@ -78,7 +83,7 @@ class TempCam:
     return q
 
   def _thread_run(self):
-    ser = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
+    ser = self._serial_obj
 
     while True:
       line = ser.readline().decode("ascii", "ignore").strip()
@@ -115,7 +120,7 @@ class Video:
   _tcam = None
 
   def __init__(self, tcam):
-    _tcam = tcam
+    self._tcam = tcam
 
   def display(self, block=False, tmin=15, tmax=35):
     self._tmin = tmin
@@ -123,6 +128,7 @@ class Video:
 
     self._display_stop = False
     self._display_thread = threading.Thread(group=None, target=self._display_thread)
+    self._display_thread.daemon = True
     self._display_thread.start()
     if block:
       self._display_thread.join()
