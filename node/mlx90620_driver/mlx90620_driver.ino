@@ -1,5 +1,6 @@
 /**
  * MLX90260 Arduino Interface
+ * Based on code from http://forum.arduino.cc/index.php/topic,126244.0.html
  */
 //#define __ASSERT_USE_STDERR
 
@@ -8,6 +9,9 @@
 #include <Wire.h>
 #include "SimpleTimer.h" // http://playground.arduino.cc/Code/SimpleTimer
 
+// Configurable options
+const int REFRESH_FREQ = 1;      // Refresh rate of sensor in Hz, must be power of 2 (0 = 0.5Hz)
+const int POR_CHECK_FREQ = 2000; // Time in milliseconds to check if MLX reset has occurred
 
 // Configuration constants
 #define PIXEL_LINES     4
@@ -17,8 +21,16 @@
 #define NUM_PIXELS      (PIXEL_LINES * PIXEL_COLUMNS)
 
 // EEPROM helpers
-#define e_read(X)       (EEPROM_DATA[X])
-#define e_write(X, Y)   (EEPROM_DATA[X] = (Y))
+#define E_READ(X)       (EEPROM_DATA[X])
+#define E_WRITE(X, Y)   (EEPROM_DATA[X] = (Y))
+
+// Bit fiddling helpers
+#define BYTES2INT(H, L)     ( ((H) << 8) + (L) )
+#define UBYTES2INT(H, L)    ( ((unsigned int)(H) << 8) + (unsigned int)(L) )
+#define BYTE2INT(B)         ( ((int)(B) > 127) ? ((int)(B) - 256) : (int)(B) )
+#define E_BYTES2INT(H, L)   ( BYTES2INT(E_READ(H), E_READ(L)) )
+#define E_UBYTES2INT(H, L)  ( UBYTES2INT(E_READ(H), E_READ(L)) )
+#define E_BYTE2INT(X)       ( BYTE2INT(E_READ(X)) )
 
 // I2C addresses
 #define ADDR_EEPROM   0x50
@@ -58,43 +70,39 @@
 #define EEPROM_EPSILON_H          0xE5 // Emissivity (high)
 #define EEPROM_TRIMMING_VAL       0xF7 // Oscillator trimming value
 
-// Config flags
+// Config flag locations
 #define CFG_TA    8
 #define CFG_IR    9  
 #define CFG_POR   10
 
-const int REFRESH_FREQ = 1;
-
-
+// Global variables
 unsigned int PTAT;              // Proportional to absolute temperature value
 int CPIX;                       // Compensation pixel
 
 int IRDATA[NUM_PIXELS];         // Infrared raw data
 byte EEPROM_DATA[EEPROM_SIZE];  // EEPROM dump
-boolean EEPROM_DUMPED;          // If EEPROM dump has previously occurred
 
 float ta;                       // Absolute chip temperature / ambient chip temperature (degrees celsius)
-float to;
-float emissivity;
-float k_t1;
-float k_t2;
-float da0_scale;
-float alpha_const;
+float emissivity;               // Emissivity compensation
+float k_t1;                     // K_T1 of absolute temperature sensor
+float k_t2;                     // K_T2 of absolute temperature sensor
+float da0_scale;                // Scaling coefficient for individual sensitivity
+float alpha_const;              // Common sensitivity coefficient of IR pixels and scaling coefficient for common sensitivity
 
-int v_th;
-int a_cp;
-int b_cp;
-int tgc;
-int b_i_scale;
+int v_th;                       // V_TH0 of absolute temperature sensor
+int a_cp;                       // Compensation pixel individual offset coefficients
+int b_cp;                       // Individual Ta dependence (slope) of the compensation pixel offset
+int tgc;                        // Thermal gradient coefficient
+int b_i_scale;                  // Scaling coefficient for slope of IR pixels offset
 
-float alpha_ij[NUM_PIXELS];
-int a_ij[NUM_PIXELS];
-int b_ij[NUM_PIXELS];
+float alpha_ij[NUM_PIXELS];     // Individual pixel sensitivity coefficient
+int a_ij[NUM_PIXELS];           // Individual pixel offset
+int b_ij[NUM_PIXELS];           // Individual pixel offset slope coefficient
 
-char hpbuf[2];          // Hex printing buffer
-int res;                // Error code storage
+char hpbuf[2];                  // Hex printing buffer
+int res;                        // Error code storage
 
-float temp[NUM_PIXELS];
+float temp[NUM_PIXELS];         // Final calculated temperature values in degrees celsius
 
 /*
 // Send assertion failures over serial
@@ -109,8 +117,9 @@ void __assert(const char *__func, const char *__file, int __lineno, const char *
     abort();
 }*/
 
+// Basic assertion failure function
 void assert(boolean a) {
-  //if (!a) Serial.println("ASSFAIL");
+  if (!a) Serial.println("ASSFAIL");
 }
 
 // Takes byte value and will output 2 character hex representation on serial
@@ -149,9 +158,10 @@ int _sensor_read_int(byte read_addr) {
     MSB = Wire.read(); 
   }
 
-  return ((unsigned int)MSB << 8) + LSB; // rearrange int to account for endian difference (TODO: check)
+  return UBYTES2INT(MSB, LSB); // rearrange int to account for endian difference (TODO: check)
 }
 
+// Will read a configuration flag bit specified by flag_loc from the sensor config
 bool _sensor_read_config_flag(int flag_loc) {
   int cur_cfg = _sensor_read_int(SENSOR_CONFIG);
   return (bool)(cur_cfg & ( 1 << flag_loc )) >> flag_loc;
@@ -182,6 +192,7 @@ bool sensor_read_ir_measure() {
   return _sensor_read_config_flag(CFG_IR);
 }
 
+// Reads all raw IR data from sensor into IRDATA variable
 boolean sensor_read_irdata() {
   int i = 0;
 
@@ -209,14 +220,13 @@ boolean sensor_read_irdata() {
       PIX_LSB = Wire.read();
       PIX_MSB = Wire.read();
       
-      IRDATA[i] = (PIX_MSB << 8) + PIX_LSB;
+      IRDATA[i] = BYTES2INT(PIX_MSB, PIX_LSB);
       i++;
     }
   }
 
   return true;
 }
-
 
 // Will send a command and the provided most significant and least significant bit 
 // with the appropriate check bit added
@@ -291,7 +301,7 @@ boolean sensor_write_conf() {
 // See datasheet: 9.4.3 Write trimming command
 // Check byte is 0xAA in this instance
 boolean sensor_write_trim() {
-  return _sensor_write_check(CMD_SENSOR_WRITE_TRIM, 0xAA, e_read(EEPROM_TRIMMING_VAL), 0x00);
+  return _sensor_write_check(CMD_SENSOR_WRITE_TRIM, 0xAA, E_READ(EEPROM_TRIMMING_VAL), 0x00);
 }
 
 // Reads EEPROM memory into global variable
@@ -311,8 +321,7 @@ boolean eeprom_read_all() {
     i = j;
     while( Wire.available() ) { // slave may send less than requested
       byte b = Wire.read(); // receive a byte as character
-      //EEPROM_DATA[i] = b;
-      e_write(i, b);
+      E_WRITE(i, b);
       i++;
     }
   }
@@ -321,51 +330,36 @@ boolean eeprom_read_all() {
     return false;
   }
 
-  EEPROM_DUMPED = true;
   return true;
 }
 
+// Writes various calculation values from EEPROM into global variables
 void calculate_init() {
-  v_th = (e_read(EEPROM_V_TH_H) <<8) + e_read(EEPROM_V_TH_L);
-  k_t1 = ((e_read(EEPROM_K_T1_H) <<8) + e_read(EEPROM_K_T1_L))/1024.0;
-  k_t2 =((e_read(EEPROM_K_T2_H) <<8) + e_read(EEPROM_K_T2_L))/1048576.0;
+  v_th = E_BYTES2INT(EEPROM_V_TH_H, EEPROM_V_TH_L);
+  k_t1 = E_BYTES2INT(EEPROM_K_T1_H, EEPROM_K_T1_L) / 1024.0;
+  k_t2 = E_BYTES2INT(EEPROM_K_T2_H, EEPROM_K_T2_L) / 1048576.0;
 
-  a_cp = e_read(EEPROM_A_CP);
-  if(a_cp > 127){
-    a_cp = a_cp - 256;
-  }
-  b_cp = e_read(EEPROM_B_CP);
-  if(b_cp > 127){
-    b_cp = b_cp - 256;
-  }
-  tgc = e_read(EEPROM_TGC);
-  if(tgc > 127){
-    tgc = tgc - 256;
-  }
+  a_cp = E_BYTE2INT(EEPROM_A_CP);
+  b_cp = E_BYTE2INT(EEPROM_B_CP);
+  tgc  = E_BYTE2INT(EEPROM_TGC);
 
-  b_i_scale = e_read(EEPROM_B_I_SCALE);
+  b_i_scale = E_READ(EEPROM_B_I_SCALE);
 
-  emissivity = (((unsigned int)e_read(EEPROM_EPSILON_H) << 8) + e_read(EEPROM_EPSILON_L))/32768.0;
+  emissivity = E_UBYTES2INT(EEPROM_EPSILON_H, EEPROM_EPSILON_L) / 32768.0;
 
-  da0_scale = pow(2, -e_read(EEPROM_DELTA_ALPHA_SCALE));
-  alpha_const = (float)(((unsigned int)e_read(EEPROM_ALPHA_0_H) << 8) + (unsigned int)e_read(EEPROM_ALPHA_0_L)) * pow(2, -e_read(EEPROM_ALPHA_0_SCALE));
+  da0_scale = pow(2, -E_READ(EEPROM_DELTA_ALPHA_SCALE));
+  alpha_const = (float)E_UBYTES2INT(EEPROM_ALPHA_0_H, EEPROM_ALPHA_0_L) * pow(2, -E_READ(EEPROM_ALPHA_0_SCALE));
 
-  for (int i=0; i<64; i++){
-    float alpha_var = (float)e_read(EEPROM_DELTA_ALPHA_00 + i) * da0_scale;
+  for (int i = 0; i < NUM_PIXELS; i++){
+    float alpha_var = (float)E_READ(EEPROM_DELTA_ALPHA_00 + i) * da0_scale;
     alpha_ij[i] = (alpha_const + alpha_var);
 
-    a_ij[i] = e_read(EEPROM_A_I_00 + i);
-    if(a_ij[i] > 127){
-      a_ij[i] = a_ij[i] - 256;
-    }
-
-    b_ij[i] = e_read(EEPROM_B_I_00 + i);
-    if(b_ij[i] > 127){
-      b_ij[i] = b_ij[i] - 256;
-    }
+    a_ij[i] = E_BYTE2INT(EEPROM_A_I_00 + i);
+    b_ij[i] = E_BYTE2INT(EEPROM_B_I_00 + i);
   }
 }
 
+// Calculates the absolute chip temperature from the proportional to absolute temperature (PTAT)
 float calculate_ta() {
   float ptat = (float)sensor_read_ptat();
   assert(ptat != -1);
@@ -377,45 +371,55 @@ float calculate_ta() {
     ) / (2*k_t2) + 25;
 }
 
+// Calculates the final temperature value for each pixel and stores it in temp array
 void calculate_temp() {
-  float v_cp_off_comp = (float) CPIX - (a_cp + (b_cp/pow(2, b_i_scale)) * (ta - 25)); //this is needed only during the to calculation, so I declare it here.
-  
-  //Serial.print("IRCLEAN ");
-  for (int i=0; i<64; i++){
+  float v_cp_off_comp = (float) CPIX - (a_cp + (b_cp/pow(2, b_i_scale)) * (ta - 25));
+
+  for (int i = 0; i < NUM_PIXELS; i++){
     float alpha_ij_v = alpha_ij[i];
     int a_ij_v = a_ij[i];
     int b_ij_v = b_ij[i];
 
     float v_ir_tgc_comp = IRDATA[i] - (a_ij_v + (float)(b_ij_v/pow(2, b_i_scale)) * (ta - 25)) - (((float)tgc/32)*v_cp_off_comp);
-    float v_ir_comp = v_ir_tgc_comp / emissivity;                  //removed to save SRAM, since emissivity in my case is equal to 1. 
+    float v_ir_comp = v_ir_tgc_comp / emissivity;
     temp[i] = sqrt(sqrt((v_ir_comp/alpha_ij_v) + pow((ta + 273.15),4))) - 273.15;
-    //Serial.print(temp);
-    //Serial.print("\t");
   }
 
-  //Serial.println();
 }
 
-
+// Prints all of EEPROM as hex
 void print_eeprom() {
   Serial.print("EEPROM ");
   for(int i = 0; i < EEPROM_SIZE; i++) {
-    print_hex(e_read(i));
+    print_hex(E_READ(i));
   }
   Serial.println();
 }
 
+// Runs functions necessary to initialize the temperature sensor
+void initialize() {
+  assert(eeprom_read_all());
+  assert(sensor_write_trim());
+  assert(sensor_write_conf());
 
+  calculate_init();
+
+  ta_loop();
+}
+
+// Calculates absolute temperature
 void ta_loop() {
   ta = calculate_ta();
 }
 
+// Checks if the sensor as been reset, and if so, re-runs the initialize functions
 void por_loop() {
   if (!sensor_read_por()) { // there has been a reset
-    assert(sensor_write_conf());
+    initialize();
   }
 }
 
+// Runs functions necessary to compute and output the temperature data
 void ir_loop() {
   assert(sensor_read_irdata());
 
@@ -451,14 +455,7 @@ void setup() {
   Serial.print(" ");
   Serial.println(__TIME__);
 
-  assert(eeprom_read_all());
-  assert(sensor_write_trim());
-  assert(sensor_write_conf());
-
-  calculate_init();
-
-  ta = calculate_ta();
-
+  initialize();
 
   float hz = REFRESH_FREQ;
 
@@ -466,6 +463,9 @@ void setup() {
     hz = 0.5;
   }
 
+  // Calculate how many milliseconds each timer should run for
+  // based upon the configured refresh rate of the IR data and 
+  // absolute temperature data
   long irlen = (1/hz) * 1000;
   long talen = (1/2.0) * 1000;
 
