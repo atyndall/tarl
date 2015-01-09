@@ -10,7 +10,7 @@
 #include "SimpleTimer.h" // http://playground.arduino.cc/Code/SimpleTimer
 
 // Configurable options
-const int REFRESH_FREQ = 1;      // Refresh rate of sensor in Hz, must be power of 2 (0 = 0.5Hz)
+const int REFRESH_FREQ = 4;      // Refresh rate of sensor in Hz, must be power of 2 (0 = 0.5Hz)
 const int POR_CHECK_FREQ = 2000; // Time in milliseconds to check if MLX reset has occurred
 
 // Configuration constants
@@ -396,6 +396,26 @@ void print_eeprom() {
   Serial.println();
 }
 
+// Prints a serial "packet" containing IR data
+void print_packet(unsigned long cur_time) {
+  Serial.print("START ");
+  Serial.println(cur_time);
+
+  for(int i = 0; i<NUM_PIXELS; i++) {
+    Serial.print(temp[i]);
+
+    if ((i+1) % PIXEL_COLUMNS == 0) {
+      Serial.println();
+    } else {
+      Serial.print("\t");
+    }
+  }
+
+ Serial.print("STOP ");
+ Serial.println(millis());
+ Serial.flush();
+}
+
 // Runs functions necessary to initialize the temperature sensor
 void initialize() {
   assert(eeprom_read_all());
@@ -421,6 +441,8 @@ void por_loop() {
 
 // Runs functions necessary to compute and output the temperature data
 void ir_loop() {
+  unsigned long cur_time = millis();
+
   assert(sensor_read_irdata());
 
   CPIX = sensor_read_cpix();
@@ -428,16 +450,7 @@ void ir_loop() {
 
   calculate_temp();
 
-  Serial.println("START");
-
-  Serial.print("IRCLEAN ");
-  for(int i = 0; i<64; i++) {
-    Serial.print(temp[i]);
-    Serial.print("\t");
-  }
-  Serial.println();
-
- Serial.println("STOP");
+  print_packet(cur_time);
 }
 
 
@@ -447,7 +460,8 @@ void setup() {
   Wire.begin(); // join i2c bus (address optional for master)
   Serial.begin(115200);
 
-  Serial.println("INIT");
+  Serial.print("INIT ");
+  Serial.println(millis());
 
   Serial.println("DRIVER MLX90620");
   Serial.print("BUILD ");
@@ -475,9 +489,11 @@ void setup() {
 
   timer.setInterval(irlen, ir_loop);
   timer.setInterval(talen, ta_loop);
-  timer.setInterval(2000, por_loop);
+  timer.setInterval(POR_CHECK_FREQ, por_loop);
 
-  Serial.println("ACTIVE");
+  Serial.print("ACTIVE ");
+  Serial.println(millis());
+  Serial.flush();
 }
 
 

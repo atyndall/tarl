@@ -37,30 +37,26 @@ class TempCam:
 
   def _decode_packet(self, packet):
     decoded_packet = {}
+    ir = []
 
     for line in packet:
       parted = line.partition(" ")
       cmd = parted[0]
       val = parted[2]
 
-      if cmd == "CPIX":
-        #decoded_packet['cpix'] = int(val)
-        pass
-      elif cmd == "PTAT":
-        #decoded_packet['ptat'] = int(val)
-        pass
-      elif cmd == "EEPROM":
-        #decoded_packet['eeprom'] = list(bytearray(codecs.decode(val, 'hex_codec')))
-        pass
-      elif cmd == "IRRAW":
-        #decoded_packet['ir_raw'] = [int(x) for x in val.split("\t")]
-        pass
-      elif cmd == "IRCLEAN":
+      if cmd == "START":
+        decoded_packet['start_millis'] = long(val)
+      elif cmd == "STOP":
+        decoded_packet['stop_millis'] = long(val)
+      else:
+        print(line)
         try:
-          decoded_packet['ir_clean'] = [float(x) for x in val.split("\t")]
+          ir.append(tuple(float(x) for x in line.split("\t")))
         except ValueError:
           print("WARNING: Could not decode corrupted packet") 
           return {}
+
+    decoded_packet['ir'] = tuple(ir)
 
     return decoded_packet
 
@@ -201,36 +197,19 @@ class TempCam:
       line = ser.readline().decode("ascii", "ignore").strip()
       msg = []
 
-      #print(line)
-
-      #while line != 
-
-      #if line.startswith("DRIVER"):
-      #  self.driver = line.split("DRIVER ")[1]
-
-      #if line.startswith("BUILD"):
-      #  self.build = line.split("BUILD ")[1]
-
       # Capture a whole packet
-      while line != "START":
+      while not line.startswith("START"):
         line = ser.readline().decode("ascii", "ignore").strip()
 
-      while line != "STOP":
+      while not line.startswith("STOP"):
         msg.append(line)
         line = ser.readline().decode("ascii", "ignore").strip()
 
+      msg.append(line)
+
       dpct = self._decode_packet(msg)
-      if 'ir_clean' in dpct:
-        pct = dpct['ir_clean']
-
-        arr = (
-          tuple(pct[0:16]),
-          tuple(pct[16:32]),
-          tuple(pct[32:48]),
-          tuple(pct[48:64])
-        )
-
-        self._temps = arr
+      if 'ir' in dpct:
+        self._temps = dpct['ir']
 
         for q in self._queues:
           q.put(self.get_temps())
