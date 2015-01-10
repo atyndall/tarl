@@ -10,8 +10,9 @@
 #include "SimpleTimer.h" // http://playground.arduino.cc/Code/SimpleTimer
 
 // Configurable options
-const int REFRESH_FREQ = 4;      // Refresh rate of sensor in Hz, must be power of 2 (0 = 0.5Hz)
-const int POR_CHECK_FREQ = 2000; // Time in milliseconds to check if MLX reset has occurred
+const int REFRESH_FREQ      = 2;    // Refresh rate of sensor in Hz, must be power of 2 (0 = 0.5Hz)
+const int POR_CHECK_FREQ    = 2000; // Time in milliseconds to check if MLX reset has occurred
+const bool TIMERS_DEFAULT   = true; // When true, timed polling of sensor will happen automatically at startup
 
 // Configuration constants
 #define PIXEL_LINES     4
@@ -103,6 +104,15 @@ char hpbuf[2];                  // Hex printing buffer
 int res;                        // Error code storage
 
 float temp[NUM_PIXELS];         // Final calculated temperature values in degrees celsius
+
+SimpleTimer timer;              // Allows timed callbacks for temp functions
+
+void(* reset_arduino) (void) = 0;   // Creates function to reset Arduino
+
+// Stores references to the 3 timers used in the program
+int ir_timer;
+int ta_timer;
+int por_timer;
 
 /*
 // Send assertion failures over serial
@@ -416,6 +426,21 @@ void print_packet(unsigned long cur_time) {
  Serial.flush();
 }
 
+// Prints info about driver, build and configuration
+void print_info() {
+  Serial.println("INFO START");
+  Serial.println("DRIVER MLX90620");
+
+  Serial.print("BUILD ");
+  Serial.print(__DATE__);
+  Serial.print(" ");
+  Serial.println(__TIME__);
+
+  Serial.print("IRHZ ");
+  Serial.println(REFRESH_FREQ);
+  Serial.println("INFO STOP");
+}
+
 // Runs functions necessary to initialize the temperature sensor
 void initialize() {
   assert(eeprom_read_all());
@@ -453,24 +478,8 @@ void ir_loop() {
   print_packet(cur_time);
 }
 
-
-SimpleTimer timer;
-
-void setup() {
-  Wire.begin(); // join i2c bus (address optional for master)
-  Serial.begin(115200);
-
-  Serial.print("INIT ");
-  Serial.println(millis());
-
-  Serial.println("DRIVER MLX90620");
-  Serial.print("BUILD ");
-  Serial.print(__DATE__);
-  Serial.print(" ");
-  Serial.println(__TIME__);
-
-  initialize();
-
+// Configures timers to poll IR and other data periodically
+void activate_timers() {
   float hz = REFRESH_FREQ;
 
   if (REFRESH_FREQ == 0) {
@@ -487,15 +496,81 @@ void setup() {
     talen = irlen;
   }
 
-  timer.setInterval(irlen, ir_loop);
-  timer.setInterval(talen, ta_loop);
-  timer.setInterval(POR_CHECK_FREQ, por_loop);
+  ir_timer = timer.setInterval(irlen, ir_loop);
+  ta_timer = timer.setInterval(talen, ta_loop);
+  por_timer = timer.setInterval(POR_CHECK_FREQ, por_loop);
+}
+
+// Disables timers to poll IR and other data periodically
+void deactivate_timers() {
+  timer.disable(ir_timer);
+  timer.deleteTimer(ir_timer);
+
+  timer.disable(ta_timer);
+  timer.deleteTimer(ta_timer);
+
+  timer.disable(por_timer);
+  timer.deleteTimer(por_timer);
+}
+
+// Configure libraries and sensors at startup
+void setup() {
+  Wire.begin();
+  Serial.begin(115200);
+
+  Serial.print("INIT ");
+  Serial.println(millis());
+
+  print_info();
+  initialize();
+
+  if (TIMERS_DEFAULT) {
+    activate_timers();
+  }
 
   Serial.print("ACTIVE ");
   Serial.println(millis());
   Serial.flush();
 }
 
+// Triggered when serial data is sent to Arduino. Used to trigger basic actions.
+void serialEvent() {
+  while (Serial.available()) {
+    char in = (char)Serial.read();
+    if (in == '\r' || in == '\n') continue;
+
+    switch (in) {
+    case 'R':
+    case 'r':
+      reset_arduino();
+      break;
+
+    case 'I':
+    case 'i':
+      print_info();
+      break;
+
+    case 'T':
+    case 't':
+      activate_timers();
+      break;
+
+    case 'O':
+    case 'o':
+      deactivate_timers();
+      break;
+
+    case 'P':
+    case 'p':
+      ta_loop();
+      ir_loop();
+      break;
+
+    default:
+      Serial.println("UNKNOWN COMMAND");
+    }
+  }
+}
 
 void loop() {
   timer.run();

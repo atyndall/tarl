@@ -12,12 +12,15 @@ import datetime
 class TempCam:
   tty = None
   baud = None
-  #driver = None
-  #build = None
+
+  driver = None
+  build = None
+  irhz = None
 
   _serial_thread = None
   _serial_stop = False
   _serial_obj = None
+  _serial_ready = False
 
   _temps = None
 
@@ -30,7 +33,14 @@ class TempCam:
     self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
     self._serial_thread = threading.Thread(group=None, target=self._thread_run)
     self._serial_thread.daemon = True
+
+    self._serial_obj.write('r') # Reset the sensor
+    self._serial_obj.flush()    
+
     self._serial_thread.start()
+
+    while not self._serial_ready: # Wait until we've populated data before continuing
+      pass
 
   def __del__(self):
     self.close() 
@@ -59,6 +69,26 @@ class TempCam:
 
     return decoded_packet
 
+  def _decode_info(self, packet):
+    decoded_packet = {}
+    ir = []
+
+    for line in packet:
+      parted = line.partition(" ")
+      cmd = parted[0]
+      val = parted[2]
+
+      if cmd == "INFO":
+        pass
+      elif cmd == "DRIVER":
+        decoded_packet['driver'] = val
+      elif cmd == "BUILD":
+        decoded_packet['build'] = val
+      elif cmd == "IRHZ":
+        decoded_packet['irhz'] = int(val) if int(val) != 0 else 0.5
+
+    return decoded_packet
+
   def close(self):
     self._serial_stop = True
 
@@ -82,8 +112,34 @@ class TempCam:
     self._queues.append(q)
     return q
 
+  def _update_info(self):
+    ser = self._serial_obj
+
+    ser.write('i')
+    ser.flush()
+    imsg = []
+
+    line = ser.readline().decode("ascii", "ignore").strip()
+
+    # Capture a whole packet
+    while not line == "INFO START":
+      line = ser.readline().decode("ascii", "ignore").strip()
+
+    while not line == "INFO STOP":
+      imsg.append(line)
+      line = ser.readline().decode("ascii", "ignore").strip()
+
+    imsg.append(line)
+
+    packet = self._decode_info(imsg)
+
+    self.driver = packet['driver']
+    self.build = packet['build']
+    self.irhz = packet['irhz']
+
   def _thread_run(self):
     ser = self._serial_obj
+    self._update_info()
 
     while True:
       line = ser.readline().decode("ascii", "ignore").strip()
@@ -105,6 +161,8 @@ class TempCam:
 
         for q in self._queues:
           q.put(self.get_temps())
+
+        self._serial_ready = True
 
       if self._serial_stop:
         ser.close()
@@ -187,7 +245,7 @@ class Video:
 
       pygame.display.flip()
 
-  def playback(self, file, hz=1.0, tmin=15, tmax=35):
+  def playback(self, file, tmin=15, tmax=35):
     self._tmin = tmin
     self._tmax = tmax
 
@@ -197,7 +255,7 @@ class Video:
 
     WIDTH = 100
 
-    playdata = self.file_to_capture(file)
+    hz, playdata = self.file_to_capture(file)
 
     pygame.init()
     pygame.display.set_caption("Playing back '{}'".format(file))
@@ -209,7 +267,6 @@ class Video:
     background = background.convert_alpha()
 
     font = pygame.font.Font(None, 36)
-
 
     start = datetime.datetime.now()
     offset = playdata[0]['start_millis']
@@ -254,17 +311,15 @@ class Video:
       return
 
     self._display_stop = True
-
-    #while self._display_thread.is_alive(): # Wait for thread to terminate
-    #  pass
-
     self._display_thread = None
 
   def close(self):
     self.display_close()
 
-  def capture_to_file(self, capture, file):
+  def capture_to_file(self, capture, hz, file):
     with open(file + '.hcap', 'w') as f:
+      f.write(str(hz) + "\n")
+
       for frame in capture:
         t = frame['start_millis']
         arr = frame['ir']
@@ -275,12 +330,16 @@ class Video:
 
   def file_to_capture(self, file):
     capture = []
+    hz = None
     with open(file + '.hcap', 'r') as f:
-      i = 0
       frame = {'ir':[]}
 
-      for line in f:
-        j = i % 6
+      for i, line in enumerate(f):
+        if i == 0:
+          hz = float(line)
+          continue
+
+        j = (i-1) % 6
         if j == 0:
           frame['start_millis'] = int(line)
         elif 0 < j < 5:
@@ -289,13 +348,12 @@ class Video:
           capture.append(frame)
           frame = {'ir':[]}
 
-        i += 1
-
-    return capture
+    return (hz, capture)
 
   def capture(self, seconds, file=None, video=False):
     buffer = []
     q = self._tcam.subscribe()
+    hz = self._tcam.irhz
 
     camera = None
 
@@ -315,6 +373,6 @@ class Video:
     #  camera.stop_recording()
 
     if file is not None:
-      self.capture_to_file(buffer, file)
+      self.capture_to_file(buffer, hz, file)
 
-    return buffer
+    return (hz, buffer)
