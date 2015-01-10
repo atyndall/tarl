@@ -182,9 +182,11 @@ class Video:
   _tmax = None
 
   _tcam = None
+  _ffmpeg_loc = None
 
-  def __init__(self, tcam=None):
+  def __init__(self, tcam=None, ffmpeg_loc="ffmpeg"):
     self._tcam = tcam
+    self._ffmpeg_loc = ffmpeg_loc
 
   def display(self, block=False, tmin=15, tmax=35):
     self._tmin = tmin
@@ -334,28 +336,26 @@ class Video:
           f.write('\t'.join([str(x) for x in l]) + "\n")
         f.write("\n")
 
-  def capture_to_img_sequence(self, capture, directory):
+  def capture_to_img_sequence(self, capture, directory, tmin=15, tmax=45):
     hz, frames = capture
 
     for i, frame in enumerate(frames):
       rgb_seq = []
       for row in frame['ir']:
         for px in row:
-          rgb_seq.append( self._temp_to_rgb(px, 15, 45) )
+          rgb_seq.append( self._temp_to_rgb(px, tmin, tmax) )
 
       im = Image.new("RGB", (16, 4))
       im.putdata(rgb_seq)
       im.save(os.path.join(directory, '{:04d}.png'.format(i)))
 
-  def capture_to_movie(self, capture, filename, width=1600, height=400):
+  def capture_to_movie(self, capture, filename, width=1600, height=400, tmin=15, tmax=45):
     hz, frames = capture
     tdir = tempfile.mkdtemp()
 
-    self.capture_to_img_sequence(capture, tdir)
+    self.capture_to_img_sequence(capture, tdir, tmin=tmin, tmax=tmax)
 
-    FFMPEG = "d:\Users\\atyndall\Documents\\ffmpeg-20140703-git-1265247-win64-static\\bin\\ffmpeg.exe"
-
-    args = [FFMPEG, 
+    args = [self._ffmpeg_loc, 
       "-y", 
       "-r", str(fractions.Fraction(hz)),
       "-i", os.path.join(tdir, "%04d.png"),
