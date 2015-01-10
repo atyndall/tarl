@@ -8,6 +8,12 @@ import threading
 import pygame
 import colorsys
 import datetime
+from PIL import Image
+import subprocess
+import tempfile
+import os
+import os.path
+import fractions
 
 class TempCam:
   tty = None
@@ -177,7 +183,7 @@ class Video:
 
   _tcam = None
 
-  def __init__(self, tcam):
+  def __init__(self, tcam=None):
     self._tcam = tcam
 
   def display(self, block=False, tmin=15, tmax=35):
@@ -327,6 +333,39 @@ class Video:
         for l in arr:
           f.write('\t'.join([str(x) for x in l]) + "\n")
         f.write("\n")
+
+  def capture_to_img_sequence(self, capture, directory):
+    hz, frames = capture
+
+    for i, frame in enumerate(frames):
+      rgb_seq = []
+      for row in frame['ir']:
+        for px in row:
+          rgb_seq.append( self._temp_to_rgb(px, 15, 45) )
+
+      im = Image.new("RGB", (16, 4))
+      im.putdata(rgb_seq)
+      im.save(os.path.join(directory, '{:04d}.png'.format(i)))
+
+  def capture_to_movie(self, capture, filename, width=1600, height=400):
+    hz, frames = capture
+    tdir = tempfile.mkdtemp()
+
+    self.capture_to_img_sequence(capture, tdir)
+
+    FFMPEG = "d:\Users\\atyndall\Documents\\ffmpeg-20140703-git-1265247-win64-static\\bin\\ffmpeg.exe"
+
+    args = [FFMPEG, 
+      "-y", 
+      "-r", str(fractions.Fraction(hz)),
+      "-i", os.path.join(tdir, "%04d.png"),
+      "-s", "{}x{}".format(width, height),
+      "-sws_flags", "neighbor",
+      "-sws_dither", "none",
+      filename
+      ]
+
+    subprocess.call(args)
 
   def file_to_capture(self, file):
     capture = []
