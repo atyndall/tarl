@@ -28,6 +28,10 @@ class TempCam:
   _serial_obj = None
   _serial_ready = False
 
+  _decode_thread = None
+
+  _read_decode_queue = None
+
   _temps = None
 
   _queues = []
@@ -37,12 +41,19 @@ class TempCam:
     self.baud = baud
 
     self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
-    self._serial_thread = threading.Thread(group=None, target=self._thread_run)
+
+    self._serial_thread = threading.Thread(group=None, target=self._read_thread_run)
     self._serial_thread.daemon = True
+
+    self._decode_thread = threading.Thread(group=None, target=self._decode_thread_run)
+    self._decode_thread.daemon = True
 
     self._serial_obj.write('r') # Reset the sensor
     self._serial_obj.flush()    
 
+    self._read_decode_queue = queue.Queue()
+
+    self._decode_thread.start()
     self._serial_thread.start()
 
     while not self._serial_ready: # Wait until we've populated data before continuing
@@ -68,8 +79,10 @@ class TempCam:
         try:
           ir.append(tuple(float(x) for x in line.split("\t")))
         except ValueError:
+          print(packet)
           print("WARNING: Could not decode corrupted packet") 
-          return {}
+          decoded_packet['ir'] = None
+          return decoded_packet
 
     decoded_packet['ir'] = tuple(ir)
 
@@ -143,8 +156,9 @@ class TempCam:
     self.build = packet['build']
     self.irhz = packet['irhz']
 
-  def _thread_run(self):
+  def _read_thread_run(self):
     ser = self._serial_obj
+    q = self._read_decode_queue
     self._update_info()
 
     while True:
@@ -155,42 +169,58 @@ class TempCam:
       while not line.startswith("START"):
         line = ser.readline().decode("ascii", "ignore").strip()
 
-      while not line.startswith("STOP"):
+      while not line.startswith("STOP"): 
         msg.append(line)
         line = ser.readline().decode("ascii", "ignore").strip()
 
       msg.append(line)
 
+      q.put(msg)
+      self._serial_ready = True
+
+      if self._serial_stop:
+        ser.close()
+        return
+
+  def _decode_thread_run(self):
+    dq = self._read_decode_queue
+    while True:
+      msg = dq.get(block=True)
+
       dpct = self._decode_packet(msg)
+
       if 'ir' in dpct:
         self._temps = dpct
 
         for q in self._queues:
           q.put(self.get_temps())
 
-        self._serial_ready = True
-
       if self._serial_stop:
-        ser.close()
         return
- 
 
 class Video:
   _display_thread = None
   _display_stop = False
   _tmin = None
   _tmax = None
+  _limit = None
+  _dwidth = None
 
   _tcam = None
   _ffmpeg_loc = None
 
-  def __init__(self, tcam=None, ffmpeg_loc="ffmpeg"):
+  _camera = None
+
+  def __init__(self, tcam=None, camera=None, ffmpeg_loc="ffmpeg"):
     self._tcam = tcam
     self._ffmpeg_loc = ffmpeg_loc
+    self._camera = camera
 
-  def display(self, block=False, tmin=15, tmax=35):
+  def display(self, limit=0, width=100, block=False, tmin=15, tmax=45):
     self._tmin = tmin
     self._tmax = tmax
+    self._limit = limit
+    self._dwidth = width
 
     self._display_stop = False
     self._display_thread = threading.Thread(group=None, target=self._display_thread)
@@ -216,7 +246,7 @@ class Video:
     return tuple(int(c * 255) for c in rgb)
 
   def _display_thread(self):
-    WIDTH = 100
+    WIDTH = self._dwidth
 
     q = self._tcam.subscribe_lifo()
     pygame.init()
@@ -253,7 +283,10 @@ class Video:
 
       pygame.display.flip()
 
-  def playback(self, file, tmin=15, tmax=35):
+      if self._limit != 0:
+        time.sleep(1.0/self._limit)
+
+  def playback(self, file, tmin=15, tmax=45):
     self._tmin = tmin
     self._tmax = tmax
 
@@ -324,8 +357,8 @@ class Video:
   def close(self):
     self.display_close()
 
-  def capture_to_file(self, capture, hz, file):
-    with open(file + '.hcap', 'w') as f:
+  def capture_to_file(self, capture, hz, filen):
+    with open(filen + '_thermal.hcap', 'w') as f:
       f.write(str(hz) + "\n")
 
       for frame in capture:
@@ -349,7 +382,7 @@ class Video:
       im.putdata(rgb_seq)
       im.save(os.path.join(directory, '{:04d}.png'.format(i)))
 
-  def capture_to_movie(self, capture, filename, width=1600, height=400, tmin=15, tmax=45):
+  def capture_to_movie(self, capture, filename, width=1920, height=480, tmin=15, tmax=45):
     hz, frames = capture
     tdir = tempfile.mkdtemp()
 
@@ -362,15 +395,15 @@ class Video:
       "-s", "{}x{}".format(width, height),
       "-sws_flags", "neighbor",
       "-sws_dither", "none",
-      filename
+      filename + '_thermal.avi'
       ]
 
     subprocess.call(args)
 
-  def file_to_capture(self, file):
+  def file_to_capture(self, filen):
     capture = []
     hz = None
-    with open(file + '.hcap', 'r') as f:
+    with open(filen + '_thermal.hcap', 'r') as f:
       frame = {'ir':[]}
 
       for i, line in enumerate(f):
@@ -389,29 +422,44 @@ class Video:
 
     return (hz, capture)
 
-  def capture(self, seconds, file=None, video=False):
-    buffer = []
+  def capture(self, seconds, name=None, hcap=False, video=False):
+    buff = []
     q = self._tcam.subscribe()
     hz = self._tcam.irhz
+    tdir = tempfile.mkdtemp()
 
     camera = None
+    visfile = name + '_visual.h264' #os.path.join(tdir, name + '_visual.h264')
 
-    #if video:
-    #  camera = picamera.PiCamera()
-    #  camera.resolution = (1280, 720)
-    #  camera.start_recording(file + '.h264')
+    if video and self._camera is not None:
+      self._camera.resolution = (1920, 1080)
+      self._camera.framerate = hz
+      self._camera.start_recording(visfile)
 
     start = time.time()
     elapsed = 0
 
     while elapsed <= seconds:
       elapsed = time.time() - start
-      buffer.append( q.get() )
+      buff.append( q.get() )
 
-    #if video:
-    #  camera.stop_recording()
+    if video and self._camera is not None:
+      self._camera.stop_recording()
 
-    if file is not None:
-      self.capture_to_file(buffer, hz, file)
+      #args = [self._ffmpeg_loc, 
+      #  "-y", 
+      #  "-r", str(fractions.Fraction(hz)),
+      #  "-i", visfile,
+      #  "-vcodec", "copy",
+      #  name + '_visual.mp4'
+      #  ]
 
-    return (hz, buffer)
+      #subprocess.call(args)
+
+      #os.remove(visfile)
+
+
+    if hcap:
+      self.capture_to_file(buff, hz, name)
+
+    return (hz, buff)
