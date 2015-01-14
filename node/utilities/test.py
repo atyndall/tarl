@@ -1,18 +1,6 @@
 import tcam
-import time
 
-tc = tcam.TempCam("COM4")
+tcv = tcam.Video(ffmpeg_loc="d:\Users\\atyndall\Documents\\ffmpeg-20140703-git-1265247-win64-static\\bin\\ffmpeg.exe")
+cap = tcv.file_to_capture('cap1')
 
-tc.display(block=True, tmin=15, tmax=40)
-
-#print("Beginning capture")
-#b = tc.capture(30, 'test', True)
-
-#print(b)
-
-#try:
-#  time.sleep(35)
-#except KeyboardInterrupt:
-#  tc.close()
-
-tc.close() 
+tcv.capture_to_movie(cap, 'cap1_temp2.avi')
