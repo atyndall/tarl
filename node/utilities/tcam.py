@@ -14,6 +14,8 @@ import tempfile
 import os
 import os.path
 import fractions
+import display_helpers
+import multiprocessing
 
 class TempCam:
   tty = None
@@ -71,18 +73,17 @@ class TempCam:
       cmd = parted[0]
       val = parted[2]
 
-      if cmd == "START":
-        decoded_packet['start_millis'] = long(val)
-      elif cmd == "STOP":
-        decoded_packet['stop_millis'] = long(val)
-      else:
-        try:
+      try:
+        if cmd == "START":
+          decoded_packet['start_millis'] = long(val)
+        elif cmd == "STOP":
+          decoded_packet['stop_millis'] = long(val)
+        else:
           ir.append(tuple(float(x) for x in line.split("\t")))
-        except ValueError:
-          print(packet)
-          print("WARNING: Could not decode corrupted packet") 
-          decoded_packet['ir'] = None
-          return decoded_packet
+      except ValueError:
+        print(packet)
+        print("WARNING: Could not decode corrupted packet") 
+        return {}
 
     decoded_packet['ir'] = tuple(ir)
 
@@ -123,6 +124,11 @@ class TempCam:
 
   def subscribe(self):
     q = queue.Queue()
+    self._queues.append(q)
+    return q
+
+  def subscribe_multiprocess(self):
+    q = multiprocessing.Queue()
     self._queues.append(q)
     return q
 
@@ -216,136 +222,31 @@ class Video:
     self._ffmpeg_loc = ffmpeg_loc
     self._camera = camera
 
-  def display(self, limit=0, width=100, block=False, tmin=15, tmax=45):
-    self._tmin = tmin
-    self._tmax = tmax
-    self._limit = limit
-    self._dwidth = width
+  def display(self, block=False, limit=0, width=100, tmin=15, tmax=45):
+    q = self._tcam.subscribe_multiprocess()
+    _, proc = display_helpers.create_pixel_display(q, limit=limit, width=width, tmin=tmin, tmax=tmax)
 
-    self._display_stop = False
-    self._display_thread = threading.Thread(group=None, target=self._display_thread)
-    self._display_thread.daemon = True
-    self._display_thread.start()
     if block:
-      self._display_thread.join()
+      proc.join()
 
-  def _temp_to_rgb(self, temp, tmin, tmax):
-    OLD_MIN = tmin
-    OLD_MAX = tmax
+  def playback(self, filen, tmin=15, tmax=45):
+    hz, playdata = self.file_to_capture(filen)
 
-    if temp < OLD_MIN:
-      temp = OLD_MIN
+    print(hz)
 
-    if temp > OLD_MAX:
-      temp = OLD_MAX
-
-    v = (temp - OLD_MIN) / (OLD_MAX - OLD_MIN)
-
-    rgb = colorsys.hsv_to_rgb((1-v), 1, v * 0.5)
-
-    return tuple(int(c * 255) for c in rgb)
-
-  def _display_thread(self):
-    WIDTH = self._dwidth
-
-    q = self._tcam.subscribe_lifo()
-    pygame.init()
-    pygame.display.set_caption("Live IR Display")
-
-    size = (16 * WIDTH, 4 * WIDTH)
-    screen = pygame.display.set_mode(size)
-
-    while True:
-      for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-          pygame.quit()
-          return
-
-      if self._display_stop:
-        pygame.quit()
-        return
-
-      qg = q.get()
-      px = qg['ir']
-
-      lag = q.qsize()
-      if lag > 0:
-        print("WARNING: Dropped " + str(lag) + " frames")
-
-      for i, row in enumerate(px):
-        for j, v in enumerate(row):
-          rgb = self._temp_to_rgb(v, self._tmin, self._tmax)
-
-          x = i*WIDTH
-          y = j*WIDTH
-
-          screen.fill(rgb, (y, x, WIDTH, WIDTH))
-
-      pygame.display.flip()
-
-      if self._limit != 0:
-        time.sleep(1.0/self._limit)
-
-  def playback(self, file, tmin=15, tmax=45):
-    self._tmin = tmin
-    self._tmax = tmax
-
-    def millis_diff(a, b):
-      diff = b - a
-      return (diff.days * 24 * 60 * 60 + diff.seconds) * 1000 + diff.microseconds / 1000.0
-
-    WIDTH = 100
-
-    hz, playdata = self.file_to_capture(file)
-
-    pygame.init()
-    pygame.display.set_caption("Playing back '{}'".format(file))
-
-    size = (16 * WIDTH, 4 * WIDTH)
-    screen = pygame.display.set_mode(size)
-
-    background = pygame.Surface(screen.get_size())
-    background = background.convert_alpha()
-
-    font = pygame.font.Font(None, 36)
+    q, thread = display_helpers.create_pixel_display(
+      limit=hz,
+      tmin=tmin, 
+      tmax=tmax, 
+      caption="Playing back '{}'".format(filen)
+    )
 
     start = datetime.datetime.now()
     offset = playdata[0]['start_millis']
 
     for n, frame in enumerate(playdata):
-      for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-          pygame.quit()
-          return
-
-      if self._display_stop:
-        pygame.quit()
-        return
-
-      qg = frame
-      px = qg['ir']
-
-      for i, row in enumerate(px):
-        for j, v in enumerate(row):
-          rgb = self._temp_to_rgb(v, self._tmin, self._tmax)
-
-          x = i*WIDTH
-          y = j*WIDTH
-
-          screen.fill(rgb, (y, x, WIDTH, WIDTH))
-
-      timestr = 'T+%.3f' % ((qg['start_millis'] - offset)/ 1000.0)
-
-      background.fill((0, 0, 0, 0))
-      text = font.render(timestr, 1, (255,255,255))
-      background.blit(text, (0,0))
-
-      # Blit everything to the screen
-      screen.blit(background, (0, 0))
-
-      pygame.display.flip()
-
-      time.sleep(1.0/float(hz))
+      frame['text'] = 'T+%.3f' % ((frame['start_millis'] - offset)/ 1000.0)
+      q.put(frame)
 
   def display_close(self):
     if self._display_thread is None:
