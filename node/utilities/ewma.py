@@ -1,7 +1,9 @@
+from __future__ import division
 import threading
 import display_helpers
 import time
 import math
+import copy
 
 def tuple_to_list(l):
   new = []
@@ -11,67 +13,139 @@ def tuple_to_list(l):
 
   return new
 
+def min_temps(l, n):
+  flat = []
+  for i, r in enumerate(l):
+    for j, v in enumerate(r):
+      flat.append(((i,j), v))
+  flat.sort(key=lambda x: x[1])
+
+  ret = [x[0] for x in flat]
+  return ret[:n]
+
+
+def init_arr(val=None):
+  return [[val for x in range(16)] for x in range(4)]
+
 class EWMA:
   _q = None
   _thread = None
 
-  _img = None
+  _background = None
   _means = None
   _stds = None
+  _stds_post = None
 
-  weight = None
+  _lock = None
+
+  motion_weight = None
+  nomotion_weight = None
 
   motion = False
 
-  def __init__(self, q, weight=0.1):
+  display = None
+
+  def __init__(self, q, motion_weight=0.1, nomotion_weight=0.01, display=True):
     self._q = q
-    self.weight = weight
+    self.motion_weight = motion_weight
+    self.nomotion_weight = nomotion_weight
+    self.display = display
 
     self._thread = threading.Thread(group=None, target=self._monitor_thread)
     self._thread.daemon = True
 
+    self._lock = threading.Lock()
+
     self._thread.start()
 
+  def get_background(self):
+    self._lock.acquire()
+    background = copy.deepcopy(self._background)
+    self._lock.release()
+    return background
+
+  def get_means(self):
+    self._lock.acquire()
+    means = copy.deepcopy(self._means)
+    self._lock.release()
+    return means
+
+  def get_stds(self):
+    self._lock.acquire()
+    stds = copy.deepcopy(self._stds_post)
+    self._lock.release()
+    return stds
 
   def _monitor_thread(self):
-    bdisp, _ = display_helpers.create_pixel_display(caption="Background")
-    ddisp, _ = display_helpers.create_pixel_display(caption="Deviation")
+    bdisp = None
+    ddisp = None
 
     n = 1
     while True:
-      frame = self._q.get()
+      if self.display and bdisp is None:
+        bdisp, _ = display_helpers.create_pixel_display(caption="Background")
+        ddisp, _ = display_helpers.create_pixel_display(caption="Deviation")
 
-      if not self.motion:
-        if n == 1:
-          self._img = tuple_to_list(frame['ir'])
-          self._means = tuple_to_list(frame['ir'])
-          self._stds = [[0 for x in range(16)] for x in range(4)]
-        else:
-          for i in range(4):
-            for j in range(16):
-              prev = self._img[i][j]
-              cur = frame['ir'][i][j]
+      frame = self._q.get()['ir']
 
-              cur_mean = self._means[i][j]
-              cur_std = self._stds[i][j]
+      self._lock.acquire()
 
-              self._img[i][j]   = self.weight * cur + (1 - self.weight) * prev
-              self._means[i][j] = cur_mean + (cur - cur_mean) / n
-              self._stds[i][j]  = cur_std + (cur - cur_mean) * (cur - self._means[i][j])
+      if n == 1:
+        self._background = tuple_to_list(frame)
+        self._means = tuple_to_list(frame)
+        self._stds = init_arr(0)
+        self._stds_post = init_arr()
+      else:
+        weight = self.nomotion_weight
+        use_frame = frame
 
-        bdisp.put({'ir': self._img})
+        if self.motion:
+          indeces = min_temps(frame, 5)
+          scalepx = []
 
-      if n >= 2:
-        std = {'ir': tuple_to_list(frame['ir'])}
+          for i, j in indeces:
+            scalepx.append(self._background[i][j] / frame[i][j])
 
+          print(scalepx)
+
+          scale = sum(scalepx) / len(scalepx)
+          scaled_bg = [[x * scale for x in r] for r in frame]
+
+          # Currently disabled because it causes a cascade issue
+          #weight = self.motion_weight
+          #use_frame = scaled_bg
+          
         for i in range(4):
           for j in range(16):
-            sigma = math.sqrt(self._stds[i][j] / (n-1))
+            prev = self._background[i][j]
+            cur = use_frame[i][j]
 
-            if (frame['ir'][i][j] - self._img[i][j]) < (3 * sigma):
-              std['ir'][i][j] = 0
+            cur_mean = self._means[i][j]
+            cur_std = self._stds[i][j]
 
-        ddisp.put(std) 
+            self._background[i][j]   = weight * cur + (1 - weight) * prev
+
+            # maybe exclude these from motion calculations?
+            self._means[i][j] = cur_mean + (cur - cur_mean) / n
+            self._stds[i][j]  = cur_std + (cur - cur_mean) * (cur - self._means[i][j])
+            self._stds_post[i][j] = math.sqrt(self._stds[i][j] / (n-1))
+
+      self._lock.release()
+      
+      if self.display:
+        bdisp.put({'ir': self._background})
+
+        if n >= 2:
+          std = {'ir': tuple_to_list(frame)}
+
+          for i in range(4):
+            for j in range(16):
+              sigma = self._stds_post[i][j]
+
+              if (frame[i][j] - self._background[i][j]) < (3 * sigma):
+                std['ir'][i][j] = 0
+
+          ddisp.put(std) 
 
       if not self.motion:
         n += 1
