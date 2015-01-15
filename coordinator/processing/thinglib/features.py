@@ -1,6 +1,8 @@
 from __future__ import division
+from __future__ import print_function
+
 import threading
-import display_helpers
+import pxdisplay
 import time
 import math
 import copy
@@ -30,7 +32,7 @@ def min_temps(l, n):
 def init_arr(val=None):
   return [[val for x in range(16)] for x in range(4)]
 
-class Features:
+class Features(object):
   _q = None
   _thread = None
 
@@ -114,8 +116,8 @@ class Features:
     n = 1
     while True:
       if self.display and bdisp is None:
-        bdisp, _ = display_helpers.create_pixel_display(caption="Background")
-        ddisp, _ = display_helpers.create_pixel_display(caption="Deviation")
+        bdisp, _ = pxdisplay.create(caption="Background")
+        ddisp, _ = pxdisplay.create(caption="Deviation")
 
       frame = self._q.get()['ir']
 

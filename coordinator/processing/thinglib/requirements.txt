@@ -1,0 +1,4 @@
+pygame
+networkx
+pyopencv
+pillow

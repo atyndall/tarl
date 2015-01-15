@@ -1,3 +1,6 @@
+from __future__ import division
+from __future__ import print_function
+
 from multiprocessing import Process, Queue
 import pygame
 import colorsys
@@ -23,7 +26,7 @@ def temp_to_rgb(temp, tmin, tmax):
 
 	return tuple(int(c * 255) for c in rgb)
 
-def create_pixel_display(q=None, limit=0, width=100, tmin=15, tmax=45, caption="Display"):
+def create(q=None, limit=0, width=100, tmin=15, tmax=45, caption="Display"):
   if q is None:
     q = Queue()
 

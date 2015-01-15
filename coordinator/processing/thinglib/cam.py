@@ -1,8 +1,10 @@
+from __future__ import division
+from __future__ import print_function
+
 import serial
 import copy
 import Queue as queue
 import time
-#import picamera
 from collections import deque
 import threading
 import pygame
@@ -14,10 +16,10 @@ import tempfile
 import os
 import os.path
 import fractions
-import display_helpers
+import pxdisplay
 import multiprocessing
 
-class TempCam:
+class Manager(object):
   tty = None
   baud = None
 
@@ -204,7 +206,7 @@ class TempCam:
       if self._serial_stop:
         return
 
-class Video:
+class Visualizer(object):
   _display_thread = None
   _display_stop = False
   _tmin = None
@@ -224,7 +226,7 @@ class Video:
 
   def display(self, block=False, limit=0, width=100, tmin=15, tmax=45):
     q = self._tcam.subscribe_multiprocess()
-    _, proc = display_helpers.create_pixel_display(q, limit=limit, width=width, tmin=tmin, tmax=tmax)
+    _, proc = pxdisplay.create(q, limit=limit, width=width, tmin=tmin, tmax=tmax)
 
     if block:
       proc.join()
@@ -234,7 +236,7 @@ class Video:
 
     print(hz)
 
-    q, thread = display_helpers.create_pixel_display(
+    q, thread = pxdisplay.create(
       limit=hz,
       tmin=tmin, 
       tmax=tmax, 
