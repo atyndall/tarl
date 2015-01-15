@@ -1,9 +1,9 @@
-import tcam
+from thinglib import *
 import time
 import sys
 
-tc = tcam.TempCam("COM4")
-tcv = tcam.Video(tc)
+tc = cam.Manager("COM4")
+tcv = cam.Visualizer(tc)
 
 
 print("Beginning capture")

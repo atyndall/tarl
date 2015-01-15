@@ -1,12 +1,11 @@
-import tcam
-import features
+from thinglib import *
 import time
 from multiprocessing import Process, freeze_support
 
 if __name__ == '__main__':
   freeze_support()
 
-  tc = tcam.TempCam("COM4")
+  tc = cam.Manager("COM4")
 
   q = tc.subscribe()
 

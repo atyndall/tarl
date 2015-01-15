@@ -1,4 +1,4 @@
-import tcam
+from thinglib import *
 import time
 import picamera
 import sys
@@ -6,8 +6,8 @@ import sys
 cam = picamera.PiCamera()
 cam.resolution = (1920, 1080)
 
-tc = tcam.TempCam("/dev/ttyACM0")
-tcv = tcam.Video(tc, camera=cam)
+tc = cam.Manager("/dev/ttyACM0")
+tcv = cam.Visualizer(tc, camera=cam)
 
 tcv.display(limit=0.5, width=80)
 

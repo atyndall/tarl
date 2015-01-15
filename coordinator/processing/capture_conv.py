@@ -1,4 +1,4 @@
-import tcam
+from thinglib import *
 import time
 import sys
 import fractions
@@ -6,7 +6,7 @@ import subprocess
 
 ffmpeg_loc="d:\\Users\\atyndall\\Documents\\ffmpeg-20140703-git-1265247-win64-static\\bin\\ffmpeg.exe"
 
-tcv = tcam.Video(ffmpeg_loc=ffmpeg_loc)
+tcv = cam.Visualizer(ffmpeg_loc=ffmpeg_loc)
 
 name = sys.argv[1]
 
