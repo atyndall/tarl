@@ -4,6 +4,9 @@ import display_helpers
 import time
 import math
 import copy
+import networkx as nx
+import itertools
+#import matplotlib.pyplot as plt
 
 def tuple_to_list(l):
   new = []
@@ -27,7 +30,7 @@ def min_temps(l, n):
 def init_arr(val=None):
   return [[val for x in range(16)] for x in range(4)]
 
-class EWMA:
+class Features:
   _q = None
   _thread = None
 
@@ -37,7 +40,15 @@ class EWMA:
   _stds_post = None
   _active = None
 
+  _num_active = None
+  _connected_graph = None
+  _num_connected = None
+  _size_connected = None
+
   _lock = None
+
+  _rows = None
+  _columns = None
 
   motion_weight = None
   nomotion_weight = None
@@ -46,13 +57,16 @@ class EWMA:
 
   display = None
 
-  def __init__(self, q, motion_weight=0.1, nomotion_weight=0.01, display=True):
+  def __init__(self, q, motion_weight=0.1, nomotion_weight=0.01, display=True, rows=4, columns=16):
     self._q = q
     self.motion_weight = motion_weight
     self.nomotion_weight = nomotion_weight
     self.display = display
 
     self._active = []
+
+    self._rows = rows
+    self._columns = columns
 
     self._thread = threading.Thread(group=None, target=self._monitor_thread)
     self._thread.daemon = True
@@ -85,6 +99,14 @@ class EWMA:
     self._lock.release()
     return active
 
+  def get_features(self):
+    self._lock.acquire()
+    num_active = self._num_active
+    num_connected = self._num_connected
+    size_connected = self._size_connected
+    self._lock.release()
+    return (num_active, num_connected, size_connected)
+
   def _monitor_thread(self):
     bdisp = None
     ddisp = None
@@ -100,6 +122,9 @@ class EWMA:
       self._lock.acquire()
 
       self._active = []
+
+
+      g = nx.Graph()
 
       if n == 1:
         self._background = tuple_to_list(frame)
@@ -124,8 +149,8 @@ class EWMA:
         #  weight = self.motion_weight
         #  use_frame = scaled_bg
           
-        for i in range(4):
-          for j in range(16):
+        for i in range(self._rows):
+          for j in range(self._columns):
             prev = self._background[i][j]
             cur = use_frame[i][j]
 
@@ -144,10 +169,26 @@ class EWMA:
             if (cur - self._background[i][j]) > (3 * self._stds_post[i][j]):
               self._active.append((i,j))
 
+              g.add_node((i,j))
+
+              x = [(-1, -1), (-1, 0), (-1, 1), (0, -1)] # Nodes that have already been computed as active
+              for ix, jx in x:
+                if (i+ix, j+jx) in self._active:
+                  g.add_edge((i,j), (i+ix,j+jx))
+
+      active = self._active
+
+      self._num_active = len(self._active)
+
+      components = list(nx.connected_components(g))
+
+      self._connected_graph = g
+      self._num_connected = nx.number_connected_components(g)
+      self._size_connected = max(len(component) for component in components) if len(components) > 0 else None
+
       self._lock.release()
-      
+    
       if self.display:
-        active = self.get_active()
         bdisp.put({'ir': self._background})
 
         if n >= 2:
@@ -156,7 +197,13 @@ class EWMA:
           for i, j in active:
             std['ir'][i][j] = frame[i][j]
 
-          ddisp.put(std) 
+          ddisp.put(std)
+
+      #print(n)
+      #if n > 30:
+      #  nx.draw(g)
+      #  plt.show()
+
 
       if not self.motion:
         n += 1

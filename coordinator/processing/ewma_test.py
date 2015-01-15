@@ -1,5 +1,5 @@
 import tcam
-import ewma
+import features
 import time
 from multiprocessing import Process, freeze_support
 
@@ -10,7 +10,7 @@ if __name__ == '__main__':
 
   q = tc.subscribe()
 
-  ew = ewma.EWMA(q) 
+  ew = features.Features(q) 
 
   time.sleep(5)
   print("MOTION ENABLED")
