@@ -12,7 +12,7 @@ if __name__ == '__main__':
 
   ew = ewma.EWMA(q) 
 
-  time.sleep(10)
+  time.sleep(5)
   print("MOTION ENABLED")
   ew.motion = True
   time.sleep(9999)
