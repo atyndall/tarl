@@ -13,6 +13,7 @@
 const int REFRESH_FREQ      = 2;    // Refresh rate of sensor in Hz, must be power of 2 (0 = 0.5Hz)
 const int POR_CHECK_FREQ    = 2000; // Time in milliseconds to check if MLX reset has occurred
 const bool TIMERS_DEFAULT   = true; // When true, timed polling of sensor will happen automatically at startup
+const int PIR_INTERRUPT_PIN = 0;    // D2 on the Arduino Uno
 
 // Configuration constants
 #define PIXEL_LINES     4
@@ -113,6 +114,8 @@ void(* reset_arduino) (void) = 0;   // Creates function to reset Arduino
 int ir_timer;
 int ta_timer;
 int por_timer;
+
+volatile bool pir_motion_detected = false;
 
 /*
 // Send assertion failures over serial
@@ -411,6 +414,9 @@ void print_packet(unsigned long cur_time) {
   Serial.print("START ");
   Serial.println(cur_time);
 
+  Serial.print("MOVEMENT ");
+  Serial.println(pir_motion_detected);
+
   for(int i = 0; i<NUM_PIXELS; i++) {
     Serial.print(temp[i]);
 
@@ -476,6 +482,8 @@ void ir_loop() {
   calculate_temp();
 
   print_packet(cur_time);
+
+  pir_motion_detected = false;
 }
 
 // Configures timers to poll IR and other data periodically
@@ -513,8 +521,14 @@ void deactivate_timers() {
   timer.deleteTimer(por_timer);
 }
 
+void pir_motion() {
+  pir_motion_detected = true;
+}
+
 // Configure libraries and sensors at startup
 void setup() {
+  pinMode(2, INPUT);
+
   Wire.begin();
   Serial.begin(115200);
 
@@ -527,6 +541,8 @@ void setup() {
   if (TIMERS_DEFAULT) {
     activate_timers();
   }
+
+  attachInterrupt(PIR_INTERRUPT_PIN, pir_motion, RISING);
 
   Serial.print("ACTIVE ");
   Serial.println(millis());

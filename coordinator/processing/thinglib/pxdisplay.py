@@ -2,7 +2,6 @@ from __future__ import division
 from __future__ import print_function
 
 from multiprocessing import Process, Queue
-import pygame
 import colorsys
 import time
 
@@ -37,6 +36,7 @@ def create(q=None, limit=0, width=100, tmin=15, tmax=45, caption="Display"):
   return (q, p)
 
 def _display_process(q, caption, tmin, tmax, limit, pxwidth):
+  import pygame
   pygame.init()
   pygame.display.set_caption(caption)
 
@@ -62,9 +62,9 @@ def _display_process(q, caption, tmin, tmax, limit, pxwidth):
 
     px = qg['ir']
 
-    lag = q.qsize()
-    if lag > 0:
-      print("WARNING: Dropped " + str(lag) + " frames")
+    #lag = q.qsize()
+    #if lag > 0:
+    #  print("WARNING: Dropped " + str(lag) + " frames")
 
     for i, row in enumerate(px):
       for j, v in enumerate(row):

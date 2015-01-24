@@ -8,6 +8,7 @@ import math
 import copy
 import networkx as nx
 import itertools
+import collections
 #import matplotlib.pyplot as plt
 
 def tuple_to_list(l):
@@ -55,15 +56,19 @@ class Features(object):
   motion_weight = None
   nomotion_weight = None
 
-  motion = False
+  motion_window = None
+
+  hz = None
 
   display = None
 
-  def __init__(self, q, motion_weight=0.1, nomotion_weight=0.01, display=True, rows=4, columns=16):
+  def __init__(self, q, hz, motion_window=10, motion_weight=0.1, nomotion_weight=0.01, display=True, rows=4, columns=16):
     self._q = q
+    self.hz = hz
     self.motion_weight = motion_weight
     self.nomotion_weight = nomotion_weight
     self.display = display
+    self.motion_window = motion_window
 
     self._active = []
 
@@ -113,18 +118,30 @@ class Features(object):
     bdisp = None
     ddisp = None
 
+    freq = self.hz * self.motion_window
+    mwin = collections.deque([False] * freq)
+
     n = 1
     while True:
       if self.display and bdisp is None:
-        bdisp, _ = pxdisplay.create(caption="Background")
-        ddisp, _ = pxdisplay.create(caption="Deviation")
+        bdisp, _ = pxdisplay.create(caption="Background", width=80)
+        ddisp, _ = pxdisplay.create(caption="Deviation", width=80)
 
-      frame = self._q.get()['ir']
+      fdata = self._q.get()
+      frame = fdata['ir']
+
+      mwin.popleft()
+      mwin.append(fdata['movement'])
+      motion = any(mwin)
+
+      if motion:
+        print("MOTION!")
+      else:
+        print("NO MOTION!")
 
       self._lock.acquire()
 
       self._active = []
-
 
       g = nx.Graph()
 
@@ -138,7 +155,7 @@ class Features(object):
         use_frame = frame
 
         # Not currently working
-        #if self.motion:
+        #if motion:
         #  indeces = min_temps(frame, 5)
         #  scalepx = []
         #
@@ -159,7 +176,7 @@ class Features(object):
             cur_mean = self._means[i][j]
             cur_std = self._stds[i][j]
 
-            if not self.motion: # TODO: temp fix
+            if not motion: # TODO: temp fix
               self._background[i][j]   = weight * cur + (1 - weight) * prev
 
               # maybe exclude these from motion calculations?
@@ -207,5 +224,5 @@ class Features(object):
       #  plt.show()
 
 
-      if not self.motion:
+      if not motion:
         n += 1

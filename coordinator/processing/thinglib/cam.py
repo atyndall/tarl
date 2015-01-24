@@ -80,6 +80,11 @@ class Manager(object):
           decoded_packet['start_millis'] = long(val)
         elif cmd == "STOP":
           decoded_packet['stop_millis'] = long(val)
+        elif cmd == "MOVEMENT":
+          if val == "0":
+            decoded_packet['movement'] = False
+          elif val == "1":
+            decoded_packet['movement'] = True
         else:
           ir.append(tuple(float(x) for x in line.split("\t")))
       except ValueError:
