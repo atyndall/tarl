@@ -40,11 +40,15 @@ class Manager(object):
 
   _queues = []
 
+  _trigger = False
+
+  _lock = None
+
   def __init__(self, tty, baud=115200):
     self.tty = tty
     self.baud = baud
 
-    self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
+    self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True, timeout=0)
 
     self._serial_thread = threading.Thread(group=None, target=self._read_thread_run)
     self._serial_thread.daemon = True
@@ -56,6 +60,8 @@ class Manager(object):
     self._serial_obj.flush()    
 
     self._read_decode_queue = queue.Queue()
+
+    self._lock = threading.Lock()
 
     self._decode_thread.start()
     self._serial_thread.start()
@@ -80,6 +86,11 @@ class Manager(object):
           decoded_packet['start_millis'] = long(val)
         elif cmd == "STOP":
           decoded_packet['stop_millis'] = long(val)
+        elif cmd == "MOVEMENT":
+          if val == "0":
+            decoded_packet['movement'] = False
+          elif val == "1":
+            decoded_packet['movement'] = True
         else:
           ir.append(tuple(float(x) for x in line.split("\t")))
       except ValueError:
@@ -139,6 +150,13 @@ class Manager(object):
     self._queues.append(q)
     return q
 
+  def trigger_capture(self):
+    print('gsdf')
+    self._lock.acquire()
+    print('dfsdf')
+    self._trigger = True
+    self._lock.release()
+
   def _update_info(self):
     ser = self._serial_obj
 
@@ -164,6 +182,8 @@ class Manager(object):
     self.build = packet['build']
     self.irhz = packet['irhz']
 
+    self._serial_ready = True
+
   def _read_thread_run(self):
     ser = self._serial_obj
     q = self._read_decode_queue
@@ -175,16 +195,25 @@ class Manager(object):
 
       # Capture a whole packet
       while not line.startswith("START"):
+        print('start')
+        if self._trigger:
+          ser.write('p')
+          print('hmm')
+
+          self._lock.acquire()
+          self._trigger = False
+          self._lock.release()
+
         line = ser.readline().decode("ascii", "ignore").strip()
 
       while not line.startswith("STOP"): 
+        print('stop')
         msg.append(line)
         line = ser.readline().decode("ascii", "ignore").strip()
 
       msg.append(line)
 
       q.put(msg)
-      self._serial_ready = True
 
       if self._serial_stop:
         ser.close()
@@ -325,44 +354,40 @@ class Visualizer(object):
 
     return (hz, capture)
 
-  def capture(self, seconds, name=None, hcap=False, video=False):
+  def capture(self, seconds, name=None, hz=8, hcap=False, video=False):
     buff = []
     q = self._tcam.subscribe()
-    hz = self._tcam.irhz
-    tdir = tempfile.mkdtemp()
 
-    camera = None
-    visfile = name + '_visual.h264' #os.path.join(tdir, name + '_visual.h264')
+    camera = self._camera
+    camera.resolution = (1280, 720)
 
-    if video and self._camera is not None:
-      self._camera.resolution = (1920, 1080)
-      self._camera.framerate = hz
-      self._camera.start_recording(visfile)
+    # Wait for analog gain to settle on a higher value than 1
+    while camera.analog_gain <= 1:
+        time.sleep(0.1)
+    # Now fix the values
+    camera.shutter_speed = camera.exposure_speed
+    camera.exposure_mode = 'off'
+    g = camera.awb_gains
+    camera.awb_mode = 'off'
+    camera.awb_gains = g
 
-    start = time.time()
-    elapsed = 0
+    import datetime, threading, time
 
-    while elapsed <= seconds:
-      elapsed = time.time() - start
-      buff.append( q.get() )
+    next_call = time.time()
 
-    if video and self._camera is not None:
-      self._camera.stop_recording()
+    def trigger(next_call):
+      print('tick')
+      camera.capture('{}.jpg'.format(next_call), use_video_port=True)
+      print('test2')
+      self._tcam.trigger_capture()
+      print('test3')
 
-      #args = [self._ffmpeg_loc, 
-      #  "-y", 
-      #  "-r", str(fractions.Fraction(hz)),
-      #  "-i", visfile,
-      #  "-vcodec", "copy",
-      #  name + '_visual.mp4'
-      #  ]
+      buff.append(q.get())
+      print('test4')
 
-      #subprocess.call(args)
+      next_call = next_call+(1.0/float(hz))
+      threading.Timer( next_call - time.time(), trigger, args=[next_call] ).start()
 
-      #os.remove(visfile)
-
-
-    if hcap:
-      self.capture_to_file(buff, hz, name)
+    trigger(next_call)
 
     return (hz, buff)
