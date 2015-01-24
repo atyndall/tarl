@@ -5,13 +5,14 @@ from multiprocessing import Process, freeze_support
 if __name__ == '__main__':
   freeze_support()
 
-  tc = cam.Manager("COM4")
+  tc = cam.Manager("/dev/tty.usbmodem411")
+  tcv = cam.Visualizer(tc)
+  tcv.display(width=80)
 
   q = tc.subscribe()
 
-  ew = features.Features(q) 
+  print("Running at ", tc.irhz)
 
-  time.sleep(5)
-  print("MOTION ENABLED")
-  ew.motion = True
+  ew = features.Features(q, tc.irhz) 
+
   time.sleep(9999)
