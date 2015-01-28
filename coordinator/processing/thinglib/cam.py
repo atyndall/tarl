@@ -10,7 +10,7 @@ import threading
 import pygame
 import colorsys
 import datetime
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import subprocess
 import tempfile
 import os
@@ -211,6 +211,77 @@ class Manager(object):
       if self._serial_stop:
         return
 
+
+
+class ManagerPlaybackEmulator(Manager):
+  _playback_data = None
+
+  _pb_thread = None
+  _pb_stop = False
+  _pb_len = 0
+
+  _i = 0
+
+  def __init__(self, playback_data=None):
+    if playback_data is not None:
+      self.irhz, self._playback_data = playback_data
+      self._pb_len = len(self._playback_data)
+
+    self.driver = "Playback"
+    self.build = "1"
+
+  def set_playback_data(self, playback_data):
+    self.stop()
+    self.irhz, self._playback_data = playback_data
+    self._pb_len = len(self._playback_data)
+
+  def close(self):
+    return
+
+  def start(self):
+    if self._pb_thread is None:
+      self._pb_stop = False
+      self._pb_thread = threading.Thread(group=None, target=self._pb_thread_run)
+      self._pb_thread.daemon = True
+      self._pb_thread.start()
+
+  def pause(self):
+    self._pb_stop = True
+
+    while self._pb_thread is not None and self._pb_thread.is_alive():
+      pass
+
+    self._pb_thread = None
+
+  def stop(self):
+    self._pb_stop = True
+
+    while self._pb_thread is not None and self._pb_thread.is_alive():
+      pass
+
+    self._pb_thread = None
+    self._i = 0
+
+  def get_temps(self):
+    return self._playback_data[self._i]
+
+  def _pb_thread_run(self):
+    while True:
+      if self._pb_stop:
+        return
+
+      for q in self._queues:
+        q.put(self._playback_data[self._i])
+
+      time.sleep(1.0/float(self.irhz))
+
+      self._i += 1
+
+      if self._i >= self._pb_len:
+        return
+
+
+
 class Visualizer(object):
   _display_thread = None
   _display_stop = False
@@ -271,24 +342,39 @@ class Visualizer(object):
 
       for frame in capture:
         t = frame['start_millis']
+        motion = frame['movement']
         arr = frame['ir']
         f.write(str(t) + "\n")
+        f.write(str(motion) + "\n")
         for l in arr:
           f.write('\t'.join([str(x) for x in l]) + "\n")
         f.write("\n")
 
-  def capture_to_img_sequence(self, capture, directory, tmin=15, tmax=45):
+  def capture_to_img_sequence(self, capture, directory, tmin=15, tmax=45, text=True):
     hz, frames = capture
+    pxwidth = 120
+    print(directory)
 
     for i, frame in enumerate(frames):
-      rgb_seq = []
-      for row in frame['ir']:
-        for px in row:
-          rgb_seq.append( self._temp_to_rgb(px, tmin, tmax) )
+      im = Image.new("RGB", (1920, 480))
+      draw = ImageDraw.Draw(im)
+      font = ImageFont.truetype("arial.ttf", 35)
 
-      im = Image.new("RGB", (16, 4))
-      im.putdata(rgb_seq)
-      im.save(os.path.join(directory, '{:04d}.png'.format(i)))
+      for k, row in enumerate(frame['ir']):
+        for j, px in enumerate(row):
+          rgb = pxdisplay.temp_to_rgb(px, tmin, tmax)
+
+          x = k*pxwidth
+          y = j*pxwidth
+
+          coords = (y, x, y+pxwidth+1, x+pxwidth+1)
+
+          draw.rectangle(coords, fill=rgb)
+
+          if text:
+            draw.text([y+20,x+(pxwidth/2-20)], str(px), fill=(255,255,255), font=font)
+
+      im.save(os.path.join(directory, '{:09d}.jpg'.format(i)))
 
   def capture_to_movie(self, capture, filename, width=1920, height=480, tmin=15, tmax=45):
     hz, frames = capture
@@ -299,11 +385,12 @@ class Visualizer(object):
     args = [self._ffmpeg_loc, 
       "-y", 
       "-r", str(fractions.Fraction(hz)),
-      "-i", os.path.join(tdir, "%04d.png"),
+      "-i", os.path.join(tdir, "%09d.png"),
       "-s", "{}x{}".format(width, height),
       "-sws_flags", "neighbor",
       "-sws_dither", "none",
-      filename + '_thermal.avi'
+      '-vcodec', 'qtrle', '-pix_fmt', 'rgb24',
+      filename + '_thermal.mov'
       ]
 
     subprocess.call(args)
@@ -319,12 +406,14 @@ class Visualizer(object):
           hz = float(line)
           continue
 
-        j = (i-1) % 6
+        j = (i-1) % 7
         if j == 0:
           frame['start_millis'] = int(line)
-        elif 0 < j < 5:
+        elif j == 1:
+          frame['movement'] = bool(line)
+        elif 1 < j < 6:
           frame['ir'].append(tuple([float(x) for x in line.split("\t")]))
-        elif j == 5:
+        elif j == 6:
           capture.append(frame)
           frame = {'ir':[]}
 
