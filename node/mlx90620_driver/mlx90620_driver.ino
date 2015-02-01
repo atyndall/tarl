@@ -10,9 +10,8 @@
 #include "SimpleTimer.h" // http://playground.arduino.cc/Code/SimpleTimer
 
 // Configurable options
-const int REFRESH_FREQ      = 2;    // Refresh rate of sensor in Hz, must be power of 2 (0 = 0.5Hz)
+int REFRESH_FREQ            = -1;    // Refresh rate of sensor in Hz, must be power of 2 (0 = 0.5Hz) -1 means configured at startup
 const int POR_CHECK_FREQ    = 2000; // Time in milliseconds to check if MLX reset has occurred
-const bool TIMERS_DEFAULT   = true; // When true, timed polling of sensor will happen automatically at startup
 const int PIR_INTERRUPT_PIN = 0;    // D2 on the Arduino Uno
 
 // Configuration constants
@@ -507,6 +506,8 @@ void activate_timers() {
   ir_timer = timer.setInterval(irlen, ir_loop);
   ta_timer = timer.setInterval(talen, ta_loop);
   por_timer = timer.setInterval(POR_CHECK_FREQ, por_loop);
+
+  attachInterrupt(PIR_INTERRUPT_PIN, pir_motion, RISING);
 }
 
 // Disables timers to poll IR and other data periodically
@@ -519,6 +520,8 @@ void deactivate_timers() {
 
   timer.disable(por_timer);
   timer.deleteTimer(por_timer);
+
+  detachInterrupt(PIR_INTERRUPT_PIN);
 }
 
 void pir_motion() {
@@ -532,22 +535,24 @@ void setup() {
   Wire.begin();
   Serial.begin(115200);
 
+  Serial.println();
   Serial.print("INIT ");
   Serial.println(millis());
 
-  print_info();
-  initialize();
-
-  if (TIMERS_DEFAULT) {
-    activate_timers();
+  while (REFRESH_FREQ == -1) { // If no freq set, wait for conf over serial
+    serialEvent();
+    delay(200);
   }
 
-  attachInterrupt(PIR_INTERRUPT_PIN, pir_motion, RISING);
+  print_info();
+  initialize();
 
   Serial.print("ACTIVE ");
   Serial.println(millis());
   Serial.flush();
 }
+
+char manualLoop = 0;
 
 // Triggered when serial data is sent to Arduino. Used to trigger basic actions.
 void serialEvent() {
@@ -578,8 +583,23 @@ void serialEvent() {
 
     case 'P':
     case 'p':
-      ta_loop();
+      if (manualLoop == 16) { // Run ta_loop every 16 manual iterations
+        ta_loop();
+        manualLoop = 0;
+      }
+
       ir_loop();
+
+      manualLoop++;
+      break;
+
+    case 'f':
+    case 'F':
+      if (REFRESH_FREQ == -1) {
+        REFRESH_FREQ = Serial.parseInt();
+      } else {
+        Serial.println("FREQ ALREADY SET");
+      }
       break;
 
     default:
