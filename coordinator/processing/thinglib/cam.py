@@ -40,7 +40,7 @@ class Manager(object):
 
   _queues = []
 
-  def __init__(self, tty, baud=115200):
+  def __init__(self, tty, hz=8, baud=115200):
     self.tty = tty
     self.baud = baud
 
@@ -52,8 +52,7 @@ class Manager(object):
     self._decode_thread = threading.Thread(group=None, target=self._decode_thread_run)
     self._decode_thread.daemon = True
 
-    self._serial_obj.write('r') # Reset the sensor
-    self._serial_obj.flush()    
+    self._reset_and_conf(hz, timers=True)
 
     self._read_decode_queue = queue.Queue()
 
@@ -65,6 +64,27 @@ class Manager(object):
 
   def __del__(self):
     self.close() 
+
+  def _reset_and_conf(self, hz, timers=True):
+    self._serial_obj.write('r\n') # Reset the sensor
+    self._serial_obj.flush()
+
+    if hz == 0.5:
+      hz = 0
+
+    time.sleep(1)
+      
+    self._serial_obj.write('f{}\n'.format(hz))
+    self._serial_obj.flush()
+
+    time.sleep(0.3)
+
+    if timers:
+      self._serial_obj.write('t\n') # Turn on timers
+    else:
+      self._serial_obj.write('o\n') # Turn on timers
+
+    self._serial_obj.flush() 
 
   def _decode_packet(self, packet):
     decoded_packet = {}
@@ -169,24 +189,30 @@ class Manager(object):
     self.build = packet['build']
     self.irhz = packet['irhz']
 
+  def _wait_read_packet(self):
+    ser = self._serial_obj
+    line = ser.readline().decode("ascii", "ignore").strip()
+    msg = []
+
+    # Capture a whole packet
+    while not line.startswith("START"):
+      line = ser.readline().decode("ascii", "ignore").strip()
+
+    while not line.startswith("STOP"): 
+      msg.append(line)
+      line = ser.readline().decode("ascii", "ignore").strip()
+
+    msg.append(line)
+
+    return msg
+
   def _read_thread_run(self):
     ser = self._serial_obj
     q = self._read_decode_queue
     self._update_info()
 
     while True:
-      line = ser.readline().decode("ascii", "ignore").strip()
-      msg = []
-
-      # Capture a whole packet
-      while not line.startswith("START"):
-        line = ser.readline().decode("ascii", "ignore").strip()
-
-      while not line.startswith("STOP"): 
-        msg.append(line)
-        line = ser.readline().decode("ascii", "ignore").strip()
-
-      msg.append(line)
+      msg = self._wait_read_packet()
 
       q.put(msg)
       self._serial_ready = True
@@ -212,6 +238,35 @@ class Manager(object):
         return
 
 
+class OnDemandManager(Manager):
+
+  def __init__(self, tty, hz=8, baud=115200):
+    self.tty = tty
+    self.baud = baud
+
+    self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
+
+    self._reset_and_conf(hz, timers=False)
+
+    self._update_info()
+
+  def close(self):
+    self._serial_obj.close()
+
+  def capture(self):
+    self._serial_obj.write('p') # Capture frame manually
+    self._serial_obj.flush()
+
+    msg = self._wait_read_packet()  
+    dpct = self._decode_packet(msg)
+
+    if 'ir' in dpct:
+      self._temps = dpct
+
+      for q in self._queues:
+        q.put(self.get_temps())
+
+    return dpct
 
 class ManagerPlaybackEmulator(Manager):
   _playback_data = None
@@ -374,7 +429,7 @@ class Visualizer(object):
           if text:
             draw.text([y+20,x+(pxwidth/2-20)], str(px), fill=(255,255,255), font=font)
 
-      im.save(os.path.join(directory, '{:09d}.jpg'.format(i)))
+      im.save(os.path.join(directory, '{:09d}.png'.format(i)))
 
   def capture_to_movie(self, capture, filename, width=1920, height=480, tmin=15, tmax=45):
     hz, frames = capture
@@ -458,5 +513,54 @@ class Visualizer(object):
 
     if hcap:
       self.capture_to_file(buff, hz, name)
+
+    return (hz, buff)
+
+  def capture_synced(self, seconds, name, hz=8, hcap=False, video=False):
+    cap_method = getattr(self._tcam, "capture", None)
+    if not callable(cap_method):
+      raise "Provided tcam class must support the capture method"
+
+    buff = []
+
+    camera = self._camera
+    camera.resolution = (1920, 1080)
+
+    # Wait for analog gain to settle on a higher value than 1
+    #while camera.analog_gain <= 1:
+    #    time.sleep(0.1)
+    # Now fix the values
+    #camera.shutter_speed = camera.exposure_speed
+    #camera.exposure_mode = 'off'
+    #g = camera.awb_gains
+    #camera.awb_mode = 'off'
+    #camera.awb_gains = g
+
+    import datetime, threading, time
+
+    dir_name = name
+    frames = seconds * hz
+
+    try:
+      os.mkdir(dir_name)
+    except OSError:
+      pass
+
+    def trigger(next_call, i):
+      camera.capture(os.path.join(dir_name, 'video-{:09d}.jpg'.format(i)), use_video_port=True)
+
+      self._tcam._serial_obj.open() # Why is this needed?
+      buff.append(self._tcam.capture())
+
+      if frames == i:
+        return
+
+      threading.Timer( next_call - time.time(), trigger,
+        args=[next_call+(1.0/float(hz)), i + 1] ).start()
+
+    trigger(time.time(), 0)
+
+    if hcap:
+      self.capture_to_file(buff, hz, os.path.join(dir_name, 'output'))
 
     return (hz, buff)
