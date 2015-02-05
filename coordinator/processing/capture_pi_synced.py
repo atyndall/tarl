@@ -14,7 +14,7 @@ if __name__ == '__main__':
   #tcv.display(limit=0.5, width=80)
 
   print("Beginning capture")
-  b = tcv.capture_synced(int(sys.argv[2]), sys.argv[1], hcap=True, video=True)
+  b = tcv.capture_synced(int(sys.argv[2]), sys.argv[1], hcap=True, video=True, hz=2)
 
   #tcv.capture_to_movie(b, 'cap1')
 

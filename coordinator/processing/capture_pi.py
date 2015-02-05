@@ -2,19 +2,23 @@ from thinglib import *
 import time
 import picamera
 import sys
+from multiprocessing import Process, freeze_support
 
-pcam = picamera.PiCamera()
-pcam.resolution = (1280, 720)
+if __name__ == '__main__':
+  freeze_support()
 
-tc = cam.Manager("/dev/ttyACM0")
-tcv = cam.Visualizer(tc, camera=pcam)
+  pcam = picamera.PiCamera()
+  pcam.resolution = (1280, 720)
 
-#tcv.display(limit=0.5, width=80)
+  tc = cam.Manager("/dev/ttyACM0")
+  tcv = cam.Visualizer(tc, camera=pcam)
 
-print("Beginning capture")
-b = tcv.capture(int(sys.argv[2]), sys.argv[1], hcap=True, video=True)
+  #tcv.display(limit=0.5, width=80)
 
-#tcv.capture_to_movie(b, 'cap1')
+  print("Beginning capture")
+  b = tcv.capture(int(sys.argv[2]), sys.argv[1], hcap=True, video=True)
 
-tc.close()
-tcv.close()
+  #tcv.capture_to_movie(b, 'cap1')
+
+  tc.close()
+  tcv.close()

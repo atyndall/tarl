@@ -24,8 +24,10 @@ args = [ffmpeg_loc,
   "-sws_flags", "neighbor",
   "-sws_dither", "none",
   '-vcodec', 'qtrle', '-pix_fmt', 'rgb24',
-  filename + '_thermal.mov'
+  name + '_visual.mov'
   ]
+
+subprocess.call(args)
 
 #tcv.capture_to_movie(b, 'cap1')
 

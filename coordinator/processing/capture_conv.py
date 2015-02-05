@@ -4,6 +4,7 @@ import sys
 import fractions
 import subprocess
 
+#ffmpeg_loc="/Users/atyndall/Dropbox/ash-honours/macffmpeg/ffmpeg"
 ffmpeg_loc="d:\\Users\\atyndall\\Documents\\ffmpeg-20140703-git-1265247-win64-static\\bin\\ffmpeg.exe"
 
 tcv = cam.Visualizer(ffmpeg_loc=ffmpeg_loc)
