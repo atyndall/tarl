@@ -134,11 +134,6 @@ class Features(object):
       mwin.append(fdata['movement'])
       motion = any(mwin)
 
-      if motion:
-        print("MOTION!")
-      else:
-        print("NO MOTION!")
-
       self._lock.acquire()
 
       self._active = []
