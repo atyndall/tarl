@@ -531,7 +531,7 @@ class Visualizer(object):
 
     return (hz, buff)
 
-  def capture_synced(self, seconds, name, hz=2, hcap=False, video=False):
+  def capture_synced(self, seconds, name, hz=2):
     cap_method = getattr(self._tcam, "capture", None)
     if not callable(cap_method):
       raise "Provided tcam class must support the capture method"
@@ -599,13 +599,11 @@ class Visualizer(object):
     print('Average time for frame capture = {} seconds'.format(sum(fps_avg)/len(fps_avg)))
     print('Average lag between camera and thermal capture = {} seconds'.format(sum(lag_avg)/len(lag_avg)))
 
-    if hcap:
-      self.capture_to_file(buff, hz, os.path.join(dir_name, 'output'))
+    self.capture_to_file(buff, hz, os.path.join(dir_name, 'output'))
 
-      for i, b in enumerate(imgbuff):
-        img_name = os.path.join(dir_name, 'video-{:09d}.jpg'.format(i))
-        with open(img_name, 'wb') as f:
-          f.write(b.getvalue())
-
+    for i, b in enumerate(imgbuff):
+      img_name = os.path.join(dir_name, 'video-{:09d}.jpg'.format(i))
+      with open(img_name, 'wb') as f:
+        f.write(b.getvalue())
 
     return (hz, buff)
