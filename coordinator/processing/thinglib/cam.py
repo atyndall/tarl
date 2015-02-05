@@ -246,6 +246,7 @@ class Manager(object):
 
 
 class OnDemandManager(Manager):
+  _cap_lock = None
 
   def __init__(self, tty, hz=8, baud=115200):
     self.tty = tty
@@ -254,6 +255,8 @@ class OnDemandManager(Manager):
 
     self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
 
+    self._cap_lock = threading.Lock()
+
     self._reset_and_conf(timers=False)
 
     self._update_info()
@@ -261,20 +264,21 @@ class OnDemandManager(Manager):
   def close(self):
     self._serial_obj.close()
 
-  def capture(self):
+  def _trigger_thread(self, callback_func):
+    self._cap_lock.acquire()
     self._serial_obj.write('p') # Capture frame manually
     self._serial_obj.flush()
 
     msg = self._wait_read_packet()  
     dpct = self._decode_packet(msg)
 
-    if 'ir' in dpct:
-      self._temps = dpct
+    self._cap_lock.release()
+    callback_func(dpct)
 
-      for q in self._queues:
-        q.put(self.get_temps())
-
-    return dpct
+  def capture(self, callback_func):
+    th = threading.Thread(group=None, target=self._trigger_thread, args=[callback_func])
+    th.daemon = True
+    th.start()
 
 class ManagerPlaybackEmulator(Manager):
   _playback_data = None
@@ -559,6 +563,10 @@ class Visualizer(object):
     except OSError:
       pass
 
+    def cap(pct):
+      print('Capture')
+      buff.append(cap)
+
     time_per_frame = 1.0/float(hz)
     stream = io.BytesIO()
     camera.start_preview()
@@ -570,7 +578,7 @@ class Visualizer(object):
         stream.seek(0)
 
         imgbuff.append(stream.getvalue())
-        buff.append(self._tcam.capture())
+        self._tcam.capture(cap)
 
         if (frames + 1) == i:
           break
