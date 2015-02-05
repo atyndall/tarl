@@ -550,7 +550,7 @@ class Visualizer(object):
     frames = seconds * hz
 
     buff = []
-    imgbuff = [io.BytesIO() for i in range(frames + 1)]
+    imgbuff = []
     fps_avg = []
     lag_avg = []
 
@@ -559,44 +559,70 @@ class Visualizer(object):
     except OSError:
       pass
 
-    def trigger(next_call, i):
-      if i % (hz * 3) == 0:
-        print('{}/{} seconds'.format(i/hz, seconds))
+    time_per_frame = 1.0/float(hz)
+    stream = io.BytesIO()
+    camera.start_preview()
+    t1 = 0
+    t1_prev = 0
+    try:
+      for i, filename in enumerate(camera.capture_continuous(stream, 'jpeg', use_video_port=True)):
+        stream.truncate()
+        stream.seek(0)
 
-      t1_start = time.time()
-      camera.capture(imgbuff[i], 'jpeg', use_video_port=True)
-      t1_t2 = time.time()
-      buff.append(self._tcam.capture())
-      t2_stop = time.time()
+        imgbuff.append(stream.getvalue())
+        buff.append(self._tcam.capture())
 
-      sec = t2_stop - t1_start
-      fps_avg.append(sec)
-      lag_avg.append(t2_stop - t1_t2)
+        if (frames + 1) == i:
+          break
 
-      if sec > (1.0/float(hz)):
-        print('Cannot keep up with frame rate!')
+        t1_prev = t1
+        t1 = time.time()
 
-      if frames == i:
-        return
+        if i != 0:
+          time.sleep(time_per_frame - (t1 - t1_prev))
 
-      th = threading.Timer( next_call - time.time(), trigger,
-        args=[next_call+(1.0/float(hz)), i + 1] )
-      th.start()
-      th.join()
-
-    trigger(time.time(), 0)
-
-    print('fps_avg {}, lag_avg {}'.format(sum(fps_avg)/len(fps_avg), sum(lag_avg)/len(lag_avg)))
-
-    #time.sleep(seconds + 1)
-
-    if hcap:
-      self.capture_to_file(buff, hz, os.path.join(dir_name, 'output'))
-
-      for i, b in enumerate(imgbuff):
-        img_name = os.path.join(dir_name, '{:09d}.jpg'.format(i))
-        with open(img_name, 'wb') as f:
-          f.write(b.getvalue())
+    finally:
+      camera.stop_preview()
 
 
-    return (hz, buff)
+    # def trigger(next_call, i):
+    #   if i % (hz * 3) == 0:
+    #     print('{}/{} seconds'.format(i/hz, seconds))
+
+    #   t1_start = time.time()
+    #   camera.capture(imgbuff[i], 'jpeg', use_video_port=True)
+    #   t1_t2 = time.time()
+    #   buff.append(self._tcam.capture())
+    #   t2_stop = time.time()
+
+    #   sec = t2_stop - t1_start
+    #   fps_avg.append(sec)
+    #   lag_avg.append(t2_stop - t1_t2)
+
+    #   if sec > (1.0/float(hz)):
+    #     print('Cannot keep up with frame rate!')
+
+    #   if frames == i:
+    #     return
+
+    #   th = threading.Timer( next_call - time.time(), trigger,
+    #     args=[next_call+(1.0/float(hz)), i + 1] )
+    #   th.start()
+    #   th.join()
+
+    # trigger(time.time(), 0)
+
+    # print('fps_avg {}, lag_avg {}'.format(sum(fps_avg)/len(fps_avg), sum(lag_avg)/len(lag_avg)))
+
+    # #time.sleep(seconds + 1)
+
+    # if hcap:
+    #   self.capture_to_file(buff, hz, os.path.join(dir_name, 'output'))
+
+    #   for i, b in enumerate(imgbuff):
+    #     img_name = os.path.join(dir_name, '{:09d}.jpg'.format(i))
+    #     with open(img_name, 'wb') as f:
+    #       f.write(b.getvalue())
+
+
+    # return (hz, buff)
