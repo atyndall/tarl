@@ -21,29 +21,22 @@ import multiprocessing
 import numpy as np
 import io
 
-class Manager(object):
-  tty = None
-  baud = None
 
+
+class BaseManager(object):
   driver = None
   build = None
   irhz = None
 
-  _serial_thread = None
-  _serial_stop = False
-  _serial_obj = None
-  _serial_ready = False
-
-  _decode_thread = None
-
-  _read_decode_queue = None
-
-  _temps = None
-
-  _queues = []
+  tty = None
+  baud = None
 
   hflip = True
   vflip = True
+
+  _temps = None
+  _serial_obj = None
+  _queues = []
 
   def __init__(self, tty, hz=8, baud=115200):
     self.tty = tty
@@ -52,24 +45,8 @@ class Manager(object):
 
     self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
 
-    self._serial_thread = threading.Thread(group=None, target=self._read_thread_run)
-    self._serial_thread.daemon = True
-
-    self._decode_thread = threading.Thread(group=None, target=self._decode_thread_run)
-    self._decode_thread.daemon = True
-
-    self._reset_and_conf(timers=True)
-
-    self._read_decode_queue = queue.Queue()
-
-    self._decode_thread.start()
-    self._serial_thread.start()
-
-    while not self._serial_ready: # Wait until we've populated data before continuing
-      pass
-
   def __del__(self):
-    self.close() 
+    self.close()
 
   def _reset_and_conf(self, timers=True):
     self._serial_obj.write('r\n') # Reset the sensor
@@ -140,34 +117,6 @@ class Manager(object):
 
     return decoded_packet
 
-  def close(self):
-    self._serial_stop = True
-
-    if self._serial_thread is not None:
-      while self._serial_thread.is_alive(): # Wait for thread to terminate
-        pass
-
-  def get_temps(self):
-    if self._temps is None:
-      return False
-    else:
-      return copy.deepcopy(self._temps)
-
-  def subscribe(self):
-    q = queue.Queue()
-    self._queues.append(q)
-    return q
-
-  def subscribe_multiprocess(self):
-    q = multiprocessing.Queue()
-    self._queues.append(q)
-    return q
-
-  def subscribe_lifo(self):
-    q = queue.LifoQueue()
-    self._queues.append(q)
-    return q
-
   def _update_info(self):
     ser = self._serial_obj
 
@@ -213,6 +162,67 @@ class Manager(object):
 
     return msg
 
+  def close(self):
+    return
+
+  def get_temps(self):
+    if self._temps is None:
+      return False
+    else:
+      return copy.deepcopy(self._temps)
+
+  def subscribe(self):
+    q = queue.Queue()
+    self._queues.append(q)
+    return q
+
+  def subscribe_multiprocess(self):
+    q = multiprocessing.Queue()
+    self._queues.append(q)
+    return q
+
+  def subscribe_lifo(self):
+    q = queue.LifoQueue()
+    self._queues.append(q)
+    return q
+
+
+
+class Manager(BaseManager):
+  _serial_thread = None
+  _serial_stop = False
+  _serial_ready = False
+
+  _decode_thread = None
+
+  _read_decode_queue = None
+
+  def __init__(self, tty, hz=8, baud=115200):
+    super(self.__class__, self).__init__(tty, hz, baud)
+
+    self._serial_thread = threading.Thread(group=None, target=self._read_thread_run)
+    self._serial_thread.daemon = True
+
+    self._decode_thread = threading.Thread(group=None, target=self._decode_thread_run)
+    self._decode_thread.daemon = True
+
+    self._reset_and_conf(timers=True)
+
+    self._read_decode_queue = queue.Queue()
+
+    self._decode_thread.start()
+    self._serial_thread.start()
+
+    while not self._serial_ready: # Wait until we've populated data before continuing
+      pass
+
+  def close(self):
+    self._serial_stop = True
+
+    if self._serial_thread is not None:
+      while self._serial_thread.is_alive(): # Wait for thread to terminate
+        pass
+
   def _read_thread_run(self):
     ser = self._serial_obj
     q = self._read_decode_queue
@@ -245,14 +255,9 @@ class Manager(object):
         return
 
 
-class OnDemandManager(Manager):
-
+class OnDemandManager(BaseManager):
   def __init__(self, tty, hz=8, baud=115200):
-    self.tty = tty
-    self.baud = baud
-    self.irhz = hz
-
-    self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
+    super(self.__class__, self).__init__(tty, hz, baud)
 
     self._reset_and_conf(timers=False)
 
@@ -276,7 +281,9 @@ class OnDemandManager(Manager):
 
     return dpct
 
-class ManagerPlaybackEmulator(Manager):
+
+
+class ManagerPlaybackEmulator(BaseManager):
   _playback_data = None
 
   _pb_thread = None
@@ -528,6 +535,9 @@ class Visualizer(object):
     cap_method = getattr(self._tcam, "capture", None)
     if not callable(cap_method):
       raise "Provided tcam class must support the capture method"
+
+    if self._camera is None:
+      raise "No picamera object provided, cannot proceed"
 
     camera = self._camera
     camera.resolution = (1920, 1080)
