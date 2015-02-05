@@ -246,7 +246,6 @@ class Manager(object):
 
 
 class OnDemandManager(Manager):
-  _cap_lock = None
 
   def __init__(self, tty, hz=8, baud=115200):
     self.tty = tty
@@ -255,8 +254,6 @@ class OnDemandManager(Manager):
 
     self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
 
-    self._cap_lock = threading.Lock()
-
     self._reset_and_conf(timers=False)
 
     self._update_info()
@@ -264,21 +261,20 @@ class OnDemandManager(Manager):
   def close(self):
     self._serial_obj.close()
 
-  def _trigger_thread(self, callback_func):
-    self._cap_lock.acquire()
+  def capture(self):
     self._serial_obj.write('p') # Capture frame manually
     self._serial_obj.flush()
 
     msg = self._wait_read_packet()  
     dpct = self._decode_packet(msg)
 
-    self._cap_lock.release()
-    callback_func(dpct)
+    if 'ir' in dpct:
+      self._temps = dpct
 
-  def capture(self, callback_func):
-    th = threading.Thread(group=None, target=self._trigger_thread, args=[callback_func])
-    th.daemon = True
-    th.start()
+      for q in self._queues:
+        q.put(self.get_temps())
+
+    return dpct
 
 class ManagerPlaybackEmulator(Manager):
   _playback_data = None
@@ -528,7 +524,7 @@ class Visualizer(object):
 
     return (hz, buff)
 
-  def capture_synced(self, seconds, name, hz=8, hcap=False, video=False):
+  def capture_synced(self, seconds, name, hz=2, hcap=False, video=False):
     cap_method = getattr(self._tcam, "capture", None)
     if not callable(cap_method):
       raise "Provided tcam class must support the capture method"
@@ -536,6 +532,7 @@ class Visualizer(object):
     camera = self._camera
     camera.resolution = (1920, 1080)
 
+    # TODO: Currently produces black images. Need to fix.
     # Wait for analog gain to settle on a higher value than 1
     #while camera.analog_gain <= 1 or camera.digital_gain <= 1:
     #    time.sleep(1)
@@ -547,14 +544,13 @@ class Visualizer(object):
     #camera.awb_mode = 'off'
     #camera.awb_gains = g
 
-
     import datetime, threading, time
 
     dir_name = name
     frames = seconds * hz
 
     buff = []
-    imgbuff = []
+    imgbuff = [io.BytesIO() for _ in range(frames + 1)]
     fps_avg = []
     lag_avg = []
 
@@ -563,74 +559,43 @@ class Visualizer(object):
     except OSError:
       pass
 
-    def cap(pct):
-      print('Capture')
-      buff.append(cap)
+    def trigger(next_call, i):
+      if i % (hz * 3) == 0:
+        print('{}/{} seconds'.format(i/hz, seconds))
 
-    time_per_frame = 1.0/float(hz)
-    stream = io.BytesIO()
-    camera.start_preview()
-    t1 = 0
-    t1_prev = 0
-    try:
-      for i, filename in enumerate(camera.capture_continuous(stream, 'jpeg', use_video_port=True)):
-        stream.truncate()
-        stream.seek(0)
+      t1_start = time.time()
+      camera.capture(imgbuff[i], 'jpeg', use_video_port=True)
+      t1_t2 = time.time()
+      buff.append(self._tcam.capture())
+      t2_stop = time.time()
 
-        imgbuff.append(stream.getvalue())
-        self._tcam.capture(cap)
+      sec = t2_stop - t1_start
+      fps_avg.append(sec)
+      lag_avg.append(t2_stop - t1_t2)
 
-        if (frames + 1) == i:
-          break
+      if sec > (1.0/float(hz)):
+        print('Cannot keep up with frame rate!')
 
-        t1_prev = t1
-        t1 = time.time()
+      if frames == i:
+        return
 
-        if i != 0:
-          time.sleep(time_per_frame - (t1 - t1_prev))
+      th = threading.Timer( next_call - time.time(), trigger,
+        args=[next_call+(1.0/float(hz)), i + 1] )
+      th.start()
+      th.join()
 
-    finally:
-      camera.stop_preview()
+    trigger(time.time(), 0)
 
+    print('Average time for frame capture = {} seconds'.format(sum(fps_avg)/len(fps_avg)))
+    print('Average lag between camera and thermal capture = {} seconds'.format(sum(lag_avg)/len(lag_avg)))
 
-    # def trigger(next_call, i):
-    #   if i % (hz * 3) == 0:
-    #     print('{}/{} seconds'.format(i/hz, seconds))
+    if hcap:
+      self.capture_to_file(buff, hz, os.path.join(dir_name, 'output'))
 
-    #   t1_start = time.time()
-    #   camera.capture(imgbuff[i], 'jpeg', use_video_port=True)
-    #   t1_t2 = time.time()
-    #   buff.append(self._tcam.capture())
-    #   t2_stop = time.time()
-
-    #   sec = t2_stop - t1_start
-    #   fps_avg.append(sec)
-    #   lag_avg.append(t2_stop - t1_t2)
-
-    #   if sec > (1.0/float(hz)):
-    #     print('Cannot keep up with frame rate!')
-
-    #   if frames == i:
-    #     return
-
-    #   th = threading.Timer( next_call - time.time(), trigger,
-    #     args=[next_call+(1.0/float(hz)), i + 1] )
-    #   th.start()
-    #   th.join()
-
-    # trigger(time.time(), 0)
-
-    # print('fps_avg {}, lag_avg {}'.format(sum(fps_avg)/len(fps_avg), sum(lag_avg)/len(lag_avg)))
-
-    # #time.sleep(seconds + 1)
-
-    # if hcap:
-    #   self.capture_to_file(buff, hz, os.path.join(dir_name, 'output'))
-
-    #   for i, b in enumerate(imgbuff):
-    #     img_name = os.path.join(dir_name, '{:09d}.jpg'.format(i))
-    #     with open(img_name, 'wb') as f:
-    #       f.write(b.getvalue())
+      for i, b in enumerate(imgbuff):
+        img_name = os.path.join(dir_name, 'video-{:09d}.jpg'.format(i))
+        with open(img_name, 'wb') as f:
+          f.write(b.getvalue())
 
 
-    # return (hz, buff)
+    return (hz, buff)
