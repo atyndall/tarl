@@ -18,6 +18,8 @@ import os.path
 import fractions
 import pxdisplay
 import multiprocessing
+import numpy as np
+import io
 
 class Manager(object):
   tty = None
@@ -40,9 +42,13 @@ class Manager(object):
 
   _queues = []
 
+  hflip = True
+  vflip = True
+
   def __init__(self, tty, hz=8, baud=115200):
     self.tty = tty
     self.baud = baud
+    self.irhz = hz
 
     self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
 
@@ -52,7 +58,7 @@ class Manager(object):
     self._decode_thread = threading.Thread(group=None, target=self._decode_thread_run)
     self._decode_thread.daemon = True
 
-    self._reset_and_conf(hz, timers=True)
+    self._reset_and_conf(timers=True)
 
     self._read_decode_queue = queue.Queue()
 
@@ -65,19 +71,11 @@ class Manager(object):
   def __del__(self):
     self.close() 
 
-  def _reset_and_conf(self, hz, timers=True):
+  def _reset_and_conf(self, timers=True):
     self._serial_obj.write('r\n') # Reset the sensor
     self._serial_obj.flush()
 
-    if hz == 0.5:
-      hz = 0
-
-    time.sleep(1)
-      
-    self._serial_obj.write('f{}\n'.format(hz))
-    self._serial_obj.flush()
-
-    time.sleep(0.3)
+    time.sleep(2)
 
     if timers:
       self._serial_obj.write('t\n') # Turn on timers
@@ -111,6 +109,12 @@ class Manager(object):
         print(packet)
         print("WARNING: Could not decode corrupted packet") 
         return {}
+
+    if self.hflip:
+      ir = map(tuple, np.fliplr(ir))
+
+    if self.vflip:
+      ir = map(tuple, np.flipud(ir))
 
     decoded_packet['ir'] = tuple(ir)
 
@@ -187,7 +191,10 @@ class Manager(object):
 
     self.driver = packet['driver']
     self.build = packet['build']
-    self.irhz = packet['irhz']
+
+    if packet['irhz'] != self.irhz:
+      ser.write('f{}'.format(self.irhz))
+      self._update_info()
 
   def _wait_read_packet(self):
     ser = self._serial_obj
@@ -243,10 +250,11 @@ class OnDemandManager(Manager):
   def __init__(self, tty, hz=8, baud=115200):
     self.tty = tty
     self.baud = baud
+    self.irhz = hz
 
     self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
 
-    self._reset_and_conf(hz, timers=False)
+    self._reset_and_conf(timers=False)
 
     self._update_info()
 
@@ -521,14 +529,13 @@ class Visualizer(object):
     if not callable(cap_method):
       raise "Provided tcam class must support the capture method"
 
-    buff = []
-
     camera = self._camera
     camera.resolution = (1920, 1080)
 
     # Wait for analog gain to settle on a higher value than 1
-    #while camera.analog_gain <= 1:
-    #    time.sleep(0.1)
+    #while camera.analog_gain <= 1 or camera.digital_gain <= 1:
+    #    time.sleep(1)
+
     # Now fix the values
     #camera.shutter_speed = camera.exposure_speed
     #camera.exposure_mode = 'off'
@@ -536,10 +543,16 @@ class Visualizer(object):
     #camera.awb_mode = 'off'
     #camera.awb_gains = g
 
+
     import datetime, threading, time
 
     dir_name = name
     frames = seconds * hz
+
+    buff = []
+    imgbuff = [io.BytesIO() for i in range(frames + 1)]
+    fps_avg = []
+    lag_avg = []
 
     try:
       os.mkdir(dir_name)
@@ -547,20 +560,43 @@ class Visualizer(object):
       pass
 
     def trigger(next_call, i):
-      camera.capture(os.path.join(dir_name, 'video-{:09d}.jpg'.format(i)), use_video_port=True)
+      if i % (hz * 3) == 0:
+        print('{}/{} seconds'.format(i/hz, seconds))
 
-      self._tcam._serial_obj.open() # Why is this needed?
+      t1_start = time.time()
+      camera.capture(imgbuff[i], 'jpeg', use_video_port=True)
+      t1_t2 = time.time()
       buff.append(self._tcam.capture())
+      t2_stop = time.time()
+
+      sec = t2_stop - t1_start
+      fps_avg.append(sec)
+      lag_avg.append(t2_stop - t1_t2)
+
+      if sec > (1.0/float(hz)):
+        print('Cannot keep up with frame rate!')
 
       if frames == i:
         return
 
-      threading.Timer( next_call - time.time(), trigger,
-        args=[next_call+(1.0/float(hz)), i + 1] ).start()
+      th = threading.Timer( next_call - time.time(), trigger,
+        args=[next_call+(1.0/float(hz)), i + 1] )
+      th.start()
+      th.join()
 
     trigger(time.time(), 0)
 
+    print('fps_avg {}, lag_avg {}'.format(sum(fps_avg)/len(fps_avg), sum(lag_avg)/len(lag_avg)))
+
+    #time.sleep(seconds + 1)
+
     if hcap:
       self.capture_to_file(buff, hz, os.path.join(dir_name, 'output'))
+
+      for i, b in enumerate(imgbuff):
+        img_name = os.path.join(dir_name, '{:09d}.jpg'.format(i))
+        with open(img_name, 'wb') as f:
+          f.write(b.getvalue())
+
 
     return (hz, buff)

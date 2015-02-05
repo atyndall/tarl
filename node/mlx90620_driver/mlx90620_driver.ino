@@ -7,10 +7,10 @@
 //#include <assert.h>
 #include <math.h>
 #include <Wire.h>
+#include <EEPROM.h>
 #include "SimpleTimer.h" // http://playground.arduino.cc/Code/SimpleTimer
 
 // Configurable options
-int REFRESH_FREQ            = -1;    // Refresh rate of sensor in Hz, must be power of 2 (0 = 0.5Hz) -1 means configured at startup
 const int POR_CHECK_FREQ    = 2000; // Time in milliseconds to check if MLX reset has occurred
 const int PIR_INTERRUPT_PIN = 0;    // D2 on the Arduino Uno
 
@@ -76,6 +76,9 @@ const int PIR_INTERRUPT_PIN = 0;    // D2 on the Arduino Uno
 #define CFG_IR    9  
 #define CFG_POR   10
 
+// Arduino EEPROM addresses
+#define AEEP_FREQ_ADDR 0x00
+
 // Global variables
 unsigned int PTAT;              // Proportional to absolute temperature value
 int CPIX;                       // Compensation pixel
@@ -107,12 +110,15 @@ float temp[NUM_PIXELS];         // Final calculated temperature values in degree
 
 SimpleTimer timer;              // Allows timed callbacks for temp functions
 
-void(* reset_arduino) (void) = 0;   // Creates function to reset Arduino
+void(* reset_arduino_now) (void) = 0;   // Creates function to reset Arduino
 
 // Stores references to the 3 timers used in the program
 int ir_timer;
 int ta_timer;
 int por_timer;
+
+// Stores refresh frequency, read out of the EEPROM
+short REFRESH_FREQ;
 
 volatile bool pir_motion_detected = false;
 
@@ -128,6 +134,11 @@ void __assert(const char *__func, const char *__file, int __lineno, const char *
     // abort program execution.
     abort();
 }*/
+
+void reset_arduino() {
+  Serial.flush();
+  reset_arduino_now();
+}
 
 // Basic assertion failure function
 void assert(boolean a) {
@@ -528,6 +539,97 @@ void pir_motion() {
   pir_motion_detected = true;
 }
 
+void read_freq() {
+  byte rd = EEPROM.read(0);
+
+  if (rd > 9) {
+    rd = 0;
+    EEPROM.write(AEEP_FREQ_ADDR, 0);
+  }
+
+  switch(rd) {
+  case 1:
+    REFRESH_FREQ = 1;
+    break;
+  case 2:
+    REFRESH_FREQ = 2;
+    break;
+  case 3:
+    REFRESH_FREQ = 4;
+    break;
+  case 4:
+    REFRESH_FREQ = 8;
+    break;
+  case 5:
+    REFRESH_FREQ = 16;
+    break;
+  case 6:
+    REFRESH_FREQ = 32;
+    break;
+  case 7:
+    REFRESH_FREQ = 64;
+    break;
+  case 8:
+    REFRESH_FREQ = 128;
+    break;
+  case 9:
+    REFRESH_FREQ = 256;
+    break;
+  case 10:
+    REFRESH_FREQ = 512;
+    break;
+
+  default:
+  case 0:
+    REFRESH_FREQ = 0;
+    break;
+  }
+}
+
+void write_freq(int freq) {
+  byte wt;
+
+  switch(freq) {
+  case 1:
+    wt = 1;
+    break;
+  case 2:
+    wt = 2;
+    break;
+  case 4:
+    wt = 3;
+    break;
+  case 8:
+    wt = 4;
+    break;
+  case 16:
+    wt = 5;
+    break;
+  case 32:
+    wt = 6;
+    break;
+  case 64:
+    wt = 7;
+    break;
+  case 128:
+    wt = 8;
+    break;
+  case 256:
+    wt = 9;
+    break;
+  case 512: // writing 512 to the config doesn't work for some reason
+    wt = 10;
+    break;
+
+  default:
+  case 0:
+    wt = 0;
+    break;
+  }
+
+  EEPROM.write(AEEP_FREQ_ADDR, wt);
+}
+
 // Configure libraries and sensors at startup
 void setup() {
   pinMode(2, INPUT);
@@ -539,11 +641,7 @@ void setup() {
   Serial.print("INIT ");
   Serial.println(millis());
 
-  while (REFRESH_FREQ == -1) { // If no freq set, wait for conf over serial
-    serialEvent();
-    delay(200);
-  }
-
+  read_freq();
   print_info();
   initialize();
 
@@ -595,11 +693,8 @@ void serialEvent() {
 
     case 'f':
     case 'F':
-      if (REFRESH_FREQ == -1) {
-        REFRESH_FREQ = Serial.parseInt();
-      } else {
-        Serial.println("FREQ ALREADY SET");
-      }
+      write_freq(Serial.parseInt());
+      reset_arduino();
       break;
 
     default:
