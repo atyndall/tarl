@@ -1,4 +1,0 @@
-pygame
-networkx
-pyopencv
-pillow

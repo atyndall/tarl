@@ -1,6 +1,8 @@
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from thinglib import *
+
 from multiprocessing import Process, freeze_support
-import sys
 
 if __name__ == '__main__':
   freeze_support()

@@ -1,6 +1,8 @@
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from thinglib import *
+
 import time
-import sys
 import fractions
 import subprocess
 
@@ -11,15 +13,21 @@ tcv = cam.Visualizer(ffmpeg_loc=ffmpeg_loc)
 
 name = sys.argv[1]
 
-cap = tcv.file_to_capture(name)
+cap = tcv.file_to_capture(os.path.join(name, 'output'))
 
 tcv.capture_to_movie(cap, name)
 
+
 args = [ffmpeg_loc, 
   "-y", 
-  "-r", str(fractions.Fraction(cap[0])),
-  "-i", sys.argv[1] + "_visual.h264",
-  "-vcodec", "copy",
+  "-framerate", str(fractions.Fraction(cap[0])),
+  "-i", os.path.join(name, "video-%09d.jpg"),
+  #"-s", "{}x{}".format(1920, 1080),
+  #"-sws_flags", "neighbor",
+  #"-sws_dither", "none",
+  "-c:v", "libx264",
+  "-r", "10",
+  "-pix_fmt", "yuv420p",
   name + '_visual.mp4'
   ]
 
