@@ -63,7 +63,7 @@ if __name__ == '__main__':
 
   for seq, (cap, img) in enumerate(zip(caps, imgs)):
     cap['movement'] = False
-    if seq > 20:
+    if seq > int(sys.argv[2]):
       cap['movement'] = True
 
     q.put(cap)
