@@ -19,7 +19,7 @@ if __name__ == '__main__':
   freeze_support()
   tcv = cam.Visualizer(None)
 
-  with open('weka.csv', 'wb') as csvfile:
+  with open(sys.argv[3], 'wb') as csvfile:
     csvfile.write(header)
 
     dirs = sys.argv[1].split(',')
@@ -36,12 +36,10 @@ if __name__ == '__main__':
 
         for seq, (cap, truth) in enumerate(zip(caps, truths)):
           cap['movement'] = False
-          if seq > 20:
+          if seq > int(sys.argv[2]):
             cap['movement'] = True
 
-          print('test1')
           q.put(cap)
-          print('test2')
 
           feats = feat.get_features()
 
