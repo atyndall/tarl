@@ -38,12 +38,13 @@ class BaseManager(object):
   _serial_obj = None
   _queues = []
 
-  def __init__(self, tty, hz=8, baud=115200):
+  def __init__(self, tty, hz=8, baud=115200, init=True):
     self.tty = tty
     self.baud = baud
     self.irhz = hz
 
-    self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
+    if init:
+      self._serial_obj = serial.Serial(port=self.tty, baudrate=self.baud, rtscts=True, dsrdtr=True)
 
   def __del__(self):
     self.close()
@@ -61,7 +62,7 @@ class BaseManager(object):
 
     self._serial_obj.flush() 
 
-  def _decode_packet(self, packet):
+  def _decode_packet(self, packet, splitchar="\t"):
     decoded_packet = {}
     ir = []
 
@@ -81,7 +82,7 @@ class BaseManager(object):
           elif val == "1":
             decoded_packet['movement'] = True
         else:
-          ir.append(tuple(float(x) for x in line.split("\t")))
+          ir.append(tuple(float(x) for x in line.split(splitchar)))
       except ValueError:
         print(packet)
         print("WARNING: Could not decode corrupted packet") 
