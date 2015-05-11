@@ -9,7 +9,7 @@ import copy
 import networkx as nx
 import itertools
 import collections
-#import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 
 def tuple_to_list(l):
   new = []
@@ -64,6 +64,9 @@ class Features(object):
 
   _exit = False
 
+  draw = False
+  freeze = False
+
   def __init__(self, q, hz, motion_window=10, motion_weight=0.1, nomotion_weight=0.01, display=True, rows=4, columns=16):
     self._q = q
     self.hz = hz
@@ -71,6 +74,8 @@ class Features(object):
     self.nomotion_weight = nomotion_weight
     self.display = display
     self.motion_window = motion_window
+
+    self.motion_override = None
 
     self._active = []
 
@@ -146,14 +151,19 @@ class Features(object):
         continue
 
       if self.display and bdisp is None:
-        bdisp, _ = pxdisplay.create(caption="Background", width=80)
+        ndisp, _ = pxdisplay.create(caption="Normal", width=80)
+        bdisp, _ = pxdisplay.create(caption="Average", width=80)
+        sdisp, _ = pxdisplay.create(caption="Std Dev", width=80, tmin=0, tmax=0.5)
         ddisp, _ = pxdisplay.create(caption="Deviation", width=80)
 
       frame = fdata['ir']
 
       mwin.popleft()
       mwin.append(fdata['movement'])
-      motion = any(mwin)
+      if self.motion_override is not None:
+        motion = self.motion_override
+      else:
+        motion = any(mwin)
 
       self._lock.acquire()
 
@@ -223,8 +233,14 @@ class Features(object):
 
       self._lock.release()
     
+      active_pix = None
+
       if self.display:
+        ndisp.put({'ir': frame})
         bdisp.put({'ir': self._background})
+        sdisp.put({'ir': self._stds_post})
+
+        #print(self._stds_post)
 
         if n >= 2:
           std = {'ir': init_arr(0)}
@@ -233,12 +249,37 @@ class Features(object):
             std['ir'][i][j] = frame[i][j]
 
           ddisp.put(std)
+          active_pix = std
 
-      #print(n)
-      #if n > 30:
-      #  nx.draw(g)
-      #  plt.show()
+      while self.freeze:
+        time.sleep(0.5)
+        pass
 
+      if self.draw:
+        #nx.draw(g)
+        #plt.show()
+
+        print('########################')
+
+        print('Edgelist')
+
+        for l in nx.generate_edgelist(g, data=False):
+          print(l)
+
+        print('Frame')
+        print(frame)
+
+        print('Average')
+        print(self._background)
+
+        print('Stddev')
+        print(self._stds_post)
+
+        print('Deviation')
+        print(active_pix)
+
+        while True:
+          pass
 
       if not motion:
         n += 1

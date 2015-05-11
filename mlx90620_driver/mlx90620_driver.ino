@@ -1,5 +1,5 @@
 /**
- * MLX90260 Arduino Interface
+ * MLX90260 Arduino-TaRL Interface
  * Based on code from http://forum.arduino.cc/index.php/topic,126244.0.html
  */
 //#define __ASSERT_USE_STDERR
